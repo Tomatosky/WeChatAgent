@@ -4,6 +4,7 @@ import IconSidebar from './components/IconSidebar.vue'
 import Sidebar from './components/Sidebar.vue'
 import ChatArea from './components/ChatArea.vue'
 import FriendGallery from './components/FriendGallery.vue'
+import BookLibraryHome from './components/BookLibraryHome.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import ProfileDialog from './components/ProfileDialog.vue'
 import SetupWizard from './components/SetupWizard.vue'
@@ -20,9 +21,10 @@ import { useUpdateCheck } from '@/composables/useUpdateCheck'
 import UpdateNotifyDialog from './components/UpdateNotifyDialog.vue'
 
 import { checkHealth } from '@/api/health'
+import { MAIN_TAB_STORAGE_KEY, isMainTab, type MainTab } from '@/types/navigation'
 
 const isSidebarOpen = ref(true)
-const activeTab = ref<'chat' | 'gallery'>('chat')
+const activeTab = ref<MainTab>('chat')
 const isSettingsOpen = ref(false)
 const isProfileOpen = ref(false)
 const isSetupWizardOpen = ref(false)
@@ -48,16 +50,27 @@ const handleOpenSettings = (tab: string = 'llm') => {
   isSettingsOpen.value = true
 }
 
-const updateActiveTab = (tab: 'chat' | 'gallery') => {
-  const nextTab = tab === 'gallery' ? 'gallery' : 'chat'
-  activeTab.value = nextTab
-  if (nextTab === 'gallery') {
-    isSidebarOpen.value = false
-    return
+const persistPrimaryTab = (tab: MainTab) => {
+  window.localStorage.setItem(MAIN_TAB_STORAGE_KEY, tab)
+}
+
+const applyActiveTab = (tab: MainTab, persist = true) => {
+  activeTab.value = tab
+  if (persist) {
+    persistPrimaryTab(tab)
   }
-  if (window.innerWidth >= 768) {
-    isSidebarOpen.value = true
-  }
+
+  // 主界面继续沿用单页切换；刷新只恢复一级入口，不恢复未来的阅读器子视图。
+  isSidebarOpen.value = tab === 'chat' && window.innerWidth >= 768
+}
+
+const getStoredPrimaryTab = (): MainTab => {
+  const storedTab = window.localStorage.getItem(MAIN_TAB_STORAGE_KEY)
+  return isMainTab(storedTab) ? storedTab : 'chat'
+}
+
+const updateActiveTab = (tab: MainTab) => {
+  applyActiveTab(tab)
 }
 
 const handleOpenGallery = () => {
@@ -86,11 +99,7 @@ const handleWindowFocus = () => {
 }
 
 onMounted(async () => {
-  activeTab.value = 'chat'
-  // If screen width is less than 768px (md breakpoint), start with sidebar closed
-  if (window.innerWidth < 768) {
-    isSidebarOpen.value = false
-  }
+  applyActiveTab(getStoredPrimaryTab(), false)
 
   // Register global focus listener to stop tray flashing
   window.addEventListener('focus', handleWindowFocus)
@@ -151,21 +160,21 @@ const handleSetupComplete = () => {
     <div class="wechat-app">
       <!-- Icon Sidebar (always visible on desktop) -->
       <div class="icon-sidebar-container">
-        <IconSidebar :active-tab="activeTab" @update:activeTab="updateActiveTab($event as 'chat' | 'gallery')"
+        <IconSidebar :active-tab="activeTab" @update:activeTab="updateActiveTab($event as MainTab)"
           @open-settings="handleOpenSettings('llm')" @open-profile="isProfileOpen = true" />
       </div>
 
       <!-- Conversation List Sidebar -->
-      <div v-if="activeTab !== 'gallery'" class="sidebar-container" :class="{ collapsed: !isSidebarOpen }">
+      <div v-if="activeTab === 'chat'" class="sidebar-container" :class="{ collapsed: !isSidebarOpen }">
         <Sidebar @open-gallery="handleOpenGallery" @add-friend="handleAddFriend" @edit-friend="handleEditFriend"
           @create-group="isGroupComposeOpen = true" />
       </div>
 
       <!-- Mobile Sidebar Overlay (Only on small screens) -->
-      <div v-if="isSidebarOpen && activeTab !== 'gallery'" class="mobile-overlay md:hidden"
+      <div v-if="isSidebarOpen && activeTab === 'chat'" class="mobile-overlay md:hidden"
         @click="isSidebarOpen = false">
         <div class="mobile-sidebar" @click.stop>
-          <IconSidebar :active-tab="activeTab" @update:activeTab="updateActiveTab($event as 'chat' | 'gallery')"
+          <IconSidebar :active-tab="activeTab" @update:activeTab="updateActiveTab($event as MainTab)"
             @open-settings="handleOpenSettings('llm')" @open-profile="isProfileOpen = true" />
           <Sidebar @open-gallery="handleOpenGallery" @add-friend="handleAddFriend" @edit-friend="handleEditFriend"
             @create-group="isGroupComposeOpen = true" />
@@ -177,6 +186,7 @@ const handleSetupComplete = () => {
       <main class="chat-container">
         <FriendGallery v-if="activeTab === 'gallery'" @back-chat="updateActiveTab('chat')"
           @open-settings="handleOpenSettings" />
+        <BookLibraryHome v-else-if="activeTab === 'library'" @back-chat="updateActiveTab('chat')" />
         <template v-else>
           <GroupChatArea v-if="sessionStore.chatType === 'group'" :is-sidebar-collapsed="!isSidebarOpen"
             @toggle-sidebar="toggleSidebar" @open-drawer="isDrawerOpen = true" @open-settings="handleOpenSettings" />

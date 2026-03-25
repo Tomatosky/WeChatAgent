@@ -2,10 +2,12 @@
 import { ref, computed, onMounted } from 'vue'
 import { useSettingsStore } from '@/stores/settings'
 import { getStaticUrl } from '@/api/base'
+import type { MainTab } from '@/types/navigation'
 
 import {
   MessageCircle,
   LayoutGrid,
+  BookOpen,
   Settings,
   Menu,
   User,
@@ -19,11 +21,11 @@ import {
 import AboutDialog from './AboutDialog.vue'
 
 defineProps<{
-  activeTab: 'chat' | 'gallery'
+  activeTab: MainTab
 }>()
 
 const emit = defineEmits<{
-  (e: 'update:activeTab', value: string): void
+  (e: 'update:activeTab', value: MainTab): void
   (e: 'open-settings'): void
   (e: 'open-profile'): void
 }>()
@@ -67,7 +69,12 @@ const handleOpenAbout = () => {
 const navItems = [
   { id: 'chat', icon: MessageCircle, label: '聊天' },
   { id: 'gallery', icon: LayoutGrid, label: '好友库' },
-]
+  { id: 'library', icon: BookOpen, label: '与作者共读' },
+] as const satisfies ReadonlyArray<{
+  id: MainTab
+  icon: typeof MessageCircle
+  label: string
+}>
 </script>
 
 <template>
