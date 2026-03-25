@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
   BookOpen,
+  Ellipsis,
   FilePlus2,
   LoaderCircle,
   RefreshCw,
@@ -34,6 +35,17 @@ const isImporting = ref(false)
 const editingBookId = ref<number | null>(null)
 const savingBookId = ref<number | null>(null)
 const deletingBookId = ref<number | null>(null)
+const menuOpenBookId = ref<number | null>(null)
+const pendingDeleteBook = ref<Book | null>(null)
+
+const toggleMenu = (bookId: number, event: Event) => {
+  event.stopPropagation()
+  menuOpenBookId.value = menuOpenBookId.value === bookId ? null : bookId
+}
+
+const closeAllMenus = () => {
+  menuOpenBookId.value = null
+}
 
 const editForm = reactive({
   aiFriendId: '',
@@ -60,37 +72,6 @@ const handleHeaderContextMenu = (event: MouseEvent) => {
   })
 }
 
-const getStatusLabel = (status: string) => {
-  switch (status) {
-    case 'imported':
-      return '已导入'
-    case 'processing':
-      return '处理中'
-    case 'ready':
-      return '可阅读'
-    case 'limited':
-      return '受限可用'
-    case 'failed':
-      return '解析失败'
-    default:
-      return status
-  }
-}
-
-const getStatusTone = (status: string) => {
-  switch (status) {
-    case 'ready':
-      return 'tone-ready'
-    case 'limited':
-      return 'tone-limited'
-    case 'failed':
-      return 'tone-failed'
-    case 'processing':
-      return 'tone-processing'
-    default:
-      return 'tone-imported'
-  }
-}
 
 const getFormatLabel = (formatType: string) => formatType.toUpperCase()
 
@@ -205,9 +186,7 @@ const handleSaveBook = async () => {
 }
 
 const handleDeleteBook = async (book: Book) => {
-  const confirmed = window.confirm(`确认删除《${book.title}》吗？相关封面、阅读进度与伴读会话会一并清理。`)
-  if (!confirmed) return
-
+  closeAllMenus()
   deletingBookId.value = book.id
   try {
     await deleteBook(book.id)
@@ -224,640 +203,640 @@ const handleDeleteBook = async (book: Book) => {
   }
 }
 
+const handleDeleteAction = async (book: Book, event: Event) => {
+  event.preventDefault()
+  event.stopPropagation()
+  closeAllMenus()
+  pendingDeleteBook.value = book
+}
+
+const cancelDelete = () => {
+  pendingDeleteBook.value = null
+}
+
+const confirmDelete = async () => {
+  if (!pendingDeleteBook.value) return
+  const target = pendingDeleteBook.value
+  pendingDeleteBook.value = null
+  await handleDeleteBook(target)
+}
+
 onMounted(() => {
   void loadInitialData()
+  document.addEventListener('click', closeAllMenus)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', closeAllMenus)
 })
 </script>
 
 <template>
   <div class="book-library-home">
-    <header class="library-header" @dblclick="handleToggleMaximize" @contextmenu="handleHeaderContextMenu">
-      <div class="library-header-inner">
-        <div class="library-title-row">
-          <div class="library-title">
-            <button class="back-btn" @click="emit('back-chat')">返回</button>
+    <div v-if="pendingDeleteBook" class="confirm-mask" @click="cancelDelete">
+      <div class="confirm-dialog" @click.stop>
+        <h3 class="confirm-title">删除图书</h3>
+        <p class="confirm-text">确认删除《{{ pendingDeleteBook.title }}》吗？删除后无法恢复。</p>
+        <div class="confirm-actions">
+          <button class="btn-ghost btn-sm" @click="cancelDelete">取消</button>
+          <button class="btn-danger btn-sm" :disabled="deletingBookId === pendingDeleteBook.id" @click="confirmDelete">
+            <LoaderCircle v-if="deletingBookId === pendingDeleteBook.id" :size="12" class="spinning" />
+            <Trash2 v-else :size="12" />
+            <span>确认删除</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Header -->
+    <header 
+      class="lib-header"
+      @dblclick="handleToggleMaximize" 
+      @contextmenu="handleHeaderContextMenu"
+    >
+      <div class="lib-header-inner">
+        <div class="lib-title-group">
+          <button class="back-btn" @click="emit('back-chat')" title="返回">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+          </button>
+          <div class="lib-icon">
             <BookOpen :size="18" />
-            <span>与作者共读</span>
           </div>
-          <div class="header-actions">
-            <button class="ghost-action" :disabled="isLoading || isImporting" @click="loadInitialData">
-              <RefreshCw :size="14" :class="{ spinning: isLoading }" />
-              刷新列表
-            </button>
-            <button class="primary-action" :disabled="isImporting" @click="openImportPicker">
-              <LoaderCircle v-if="isImporting" :size="14" class="spinning" />
-              <FilePlus2 v-else :size="14" />
-              {{ isImporting ? '导入中...' : '导入图书' }}
-            </button>
-            <input
-              ref="fileInput"
-              class="hidden-file-input"
-              type="file"
-              :accept="accept"
-              @change="handleFileChange">
-          </div>
+          <span class="lib-title-text">与作者共读</span>
+        </div>
+        <div class="lib-actions">
+          <button class="btn-ghost" :disabled="isLoading || isImporting" @click="loadInitialData">
+            <RefreshCw :size="14" :class="{ spinning: isLoading }" />
+            刷新列表
+          </button>
+          <button class="btn-primary" :disabled="isImporting" @click="openImportPicker">
+            <LoaderCircle v-if="isImporting" :size="14" class="spinning" />
+            <FilePlus2 v-else :size="14" />
+            {{ isImporting ? '导入中...' : '导入图书' }}
+          </button>
+          <input ref="fileInput" type="file" :accept="accept" class="sr-only" @change="handleFileChange">
         </div>
       </div>
     </header>
 
-    <section class="workspace-grid">
-      <article class="shelf-panel">
-        <div class="panel-header">
-          <div>
-            <div class="panel-title">我的图书馆</div>
+    <!-- Main Scroll Area -->
+    <main class="lib-main">
+      <div class="shelf-card">
+        <!-- Shelf Header -->
+        <div class="shelf-header">
+          <h2 class="shelf-title">我的图书馆</h2>
+          <span class="shelf-badge">{{ totalBooks ? `共 ${totalBooks} 本` : '等待导入' }}</span>
+        </div>
+
+        <!-- Loading -->
+        <div v-if="isLoading" class="empty-state">
+          <LoaderCircle :size="24" class="spinning text-green" />
+          <p>正在加载图书列表...</p>
+        </div>
+
+        <!-- Empty -->
+        <div v-else-if="!books.length" class="empty-state">
+          <div class="empty-icon-wrap">
+            <BookOpen :size="28" />
           </div>
-          <span class="panel-badge">{{ totalBooks ? `共 ${totalBooks} 本` : '等待导入' }}</span>
-        </div>
-
-        <div v-if="isLoading" class="loading-shelf">
-          <LoaderCircle :size="22" class="spinning" />
-          <span>正在加载图书列表...</span>
-        </div>
-
-        <div v-else-if="!books.length" class="empty-shelf">
-          <h2>图书馆里还没有书</h2>
-          <p>导入一本书后，就可以绑定 AI 作者。</p>
-          <button class="empty-import-action" :disabled="isImporting" @click="openImportPicker">
-            <LoaderCircle v-if="isImporting" :size="16" class="spinning" />
-            <FilePlus2 v-else :size="16" />
+          <h3>图书馆里还没有书</h3>
+          <p class="empty-hint">导入一本书后，就可以绑定 AI 作者，开启深度阅读对谈体验。</p>
+          <button class="btn-primary" :disabled="isImporting" @click="openImportPicker">
+            <LoaderCircle v-if="isImporting" :size="14" class="spinning" />
+            <FilePlus2 v-else :size="14" />
             {{ isImporting ? '导入中...' : '导入第一本书' }}
           </button>
         </div>
 
+        <!-- Book Grid -->
         <div v-else class="book-grid">
           <article v-for="book in books" :key="book.id" class="book-card">
-            <div class="book-cover-shell">
+            <!-- Cover -->
+            <div class="cover-wrap">
               <img
                 v-if="getCoverUrl(book.cover_url)"
                 :src="getCoverUrl(book.cover_url)"
                 :alt="`${book.title} 封面`"
-                class="book-cover"
-                loading="lazy">
-              <div v-else class="book-cover-placeholder">
-                <span class="cover-format">{{ getFormatLabel(book.format_type) }}</span>
-                <span class="cover-title">{{ book.title }}</span>
+                class="cover-img"
+                loading="lazy"
+              >
+              <div v-else class="cover-placeholder">
+                <span class="cover-format-tag">{{ getFormatLabel(book.format_type) }}</span>
+                <span class="cover-title-text">{{ book.title }}</span>
               </div>
-              <span class="status-pill" :class="getStatusTone(book.status)">{{ getStatusLabel(book.status) }}</span>
+              <!-- More Menu Button -->
+              <div class="cover-menu-anchor">
+                <button class="cover-menu-btn" @click="toggleMenu(book.id, $event)" title="更多操作">
+                  <Ellipsis :size="16" />
+                </button>
+                <div v-if="menuOpenBookId === book.id" class="cover-dropdown" @click.stop>
+                  <button
+                    type="button"
+                    class="dropdown-item dropdown-item-danger"
+                    :disabled="deletingBookId === book.id"
+                    @click="handleDeleteAction(book, $event)"
+                  >
+                    <LoaderCircle v-if="deletingBookId === book.id" :size="14" class="spinning" />
+                    <Trash2 v-else :size="14" />
+                    <span>删除图书</span>
+                  </button>
+                </div>
+              </div>
             </div>
 
+            <!-- Meta -->
             <div class="book-meta">
-              <h3>{{ book.title }}</h3>
+              <h3 class="book-title">{{ book.title }}</h3>
               <p class="book-author">{{ book.author || '原作者待补充' }}</p>
-
-              <button
-                type="button"
-                class="binding-banner"
-                :class="{
-                  'binding-valid': book.author_binding_status === 'valid',
-                  'binding-invalid': book.author_binding_status === 'invalid',
-                  'binding-empty': book.author_binding_status === 'unbound',
-                }"
-                @click="startEditing(book)">
-                <UserRound :size="14" />
+              <button type="button" class="binding-btn" :class="'bind-' + book.author_binding_status" @click="startEditing(book)">
+                <UserRound :size="12" />
                 <span>{{ getBindingLabel(book) }}</span>
               </button>
             </div>
 
-            <div v-if="editingBookId === book.id" class="edit-panel">
-              <label class="field">
-                <span>绑定 AI 作者</span>
-                <select v-model="editForm.aiFriendId">
-                  <option value="">暂不绑定</option>
-                  <option v-for="friend in bindableFriends" :key="friend.id" :value="String(friend.id)">
-                    {{ friend.name }}
-                  </option>
-                </select>
-              </label>
-
-              <div class="edit-actions">
-                <button
-                  class="danger-text-btn"
-                  :disabled="deletingBookId === book.id"
-                  @click="handleDeleteBook(book)">
-                  <LoaderCircle v-if="deletingBookId === book.id" :size="14" class="spinning" />
-                  <Trash2 v-else :size="14" />
-                  删除图书
-                </button>
-                <button class="ghost-action inline-ghost" @click="cancelEditing">取消</button>
-                <button class="primary-action inline-primary" :disabled="savingBookId === book.id" @click="handleSaveBook">
-                  <LoaderCircle v-if="savingBookId === book.id" :size="14" class="spinning" />
-                  <span>{{ savingBookId === book.id ? '保存中...' : '保存修改' }}</span>
-                </button>
-              </div>
+            <!-- Edit Overlay -->
+            <div v-if="editingBookId === book.id" class="edit-overlay">
+              <label class="edit-label">绑定 AI 作者</label>
+              <select v-model="editForm.aiFriendId" class="edit-select">
+                <option value="">暂不绑定</option>
+                <option v-for="friend in bindableFriends" :key="friend.id" :value="String(friend.id)">{{ friend.name }}</option>
+              </select>
+              <button class="btn-primary btn-sm" :disabled="savingBookId === book.id" @click="handleSaveBook">
+                <LoaderCircle v-if="savingBookId === book.id" :size="12" class="spinning" />
+                <span>{{ savingBookId === book.id ? '保存...' : '确认绑定' }}</span>
+              </button>
+              <button class="btn-ghost btn-sm" style="width:100%" @click="cancelEditing">取消</button>
             </div>
           </article>
         </div>
-      </article>
-    </section>
+      </div>
+    </main>
   </div>
 </template>
 
 <style scoped>
+/* ── Root ── */
 .book-library-home {
-  position: relative;
-  isolation: isolate;
   display: flex;
   flex-direction: column;
-  min-height: 100%;
-  background:
-    radial-gradient(circle at top left, rgba(7, 193, 96, 0.1), transparent 28%),
-    radial-gradient(circle at 92% 18%, rgba(23, 23, 23, 0.06), transparent 24%),
-    linear-gradient(180deg, #f7f8f7 0%, #eef2ef 52%, #f3f4f3 100%);
-  overflow: auto;
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(180deg, #f7f8fa 0%, #eef1f0 100%);
+  overflow: hidden;
 }
 
-.book-library-home::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.48) 0%, transparent 32%),
-    linear-gradient(225deg, rgba(7, 193, 96, 0.04) 0%, transparent 28%);
-  pointer-events: none;
-}
-
-.book-library-home > * {
-  position: relative;
-  z-index: 1;
-}
-
-.library-header {
-  padding: 20px 130px 14px 24px;
-  border-bottom: 1px solid rgba(214, 220, 214, 0.95);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(246, 248, 246, 0.94) 100%);
-  box-shadow: 0 10px 24px rgba(31, 41, 31, 0.05);
-}
-
-.library-header-inner {
+/* ── Header ── */
+.lib-header {
+  flex: none;
+  padding: 14px 24px 12px;
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+  background: rgba(255,255,255,0.82);
+  backdrop-filter: blur(18px);
   -webkit-app-region: drag;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
 }
-
-.library-title-row {
+.lib-header-inner {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
 }
-
-.library-title {
+.lib-title-group {
   display: flex;
   align-items: center;
-  gap: 8px;
-  color: #1f2937;
-  font-size: 18px;
-  font-weight: 600;
+  gap: 10px;
 }
-
-.back-btn,
-.ghost-action,
-.primary-action,
-.empty-import-action,
-.field input,
-.field select {
-  -webkit-app-region: no-drag;
-}
-
 .back-btn {
   display: none;
+  -webkit-app-region: no-drag;
   border: none;
   background: transparent;
   color: #07c160;
-  font-size: 12px;
-  padding: 4px 6px;
-  border-radius: 6px;
+  padding: 4px;
+  border-radius: 8px;
   cursor: pointer;
 }
-
-.back-btn:hover {
-  background: rgba(7, 193, 96, 0.1);
-}
-
-.header-actions {
+.back-btn:hover { background: rgba(7,193,96,0.08); }
+.lib-icon {
+  width: 34px;
+  height: 34px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: center;
+  border-radius: 10px;
+  background: #07c160;
+  color: #fff;
+}
+.lib-title-text {
+  font-size: 17px;
+  font-weight: 700;
+  color: #1e293b;
+}
+.lib-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  -webkit-app-region: no-drag;
 }
 
-.ghost-action,
-.primary-action,
-.empty-import-action {
+/* ── Buttons ── */
+.btn-ghost, .btn-primary, .btn-danger {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 5px;
   border: none;
-  border-radius: 12px;
+  border-radius: 10px;
   font-size: 13px;
   font-weight: 600;
-  transition: transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
   cursor: pointer;
+  transition: all 0.2s;
+  -webkit-app-region: no-drag;
 }
-
-.ghost-action {
-  min-width: 102px;
-  height: 36px;
+.btn-ghost {
+  height: 34px;
   padding: 0 14px;
-  border: 1px solid rgba(202, 210, 202, 0.9);
-  background: rgba(255, 255, 255, 0.84);
-  color: #5f6b63;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  color: #64748b;
 }
-
-.ghost-action:hover:not(:disabled),
-.primary-action:hover:not(:disabled),
-.empty-import-action:hover:not(:disabled) {
-  transform: translateY(-1px);
-}
-
-.primary-action,
-.empty-import-action,
-.inline-primary {
-  background: linear-gradient(135deg, #07c160 0%, #10a04e 100%);
-  color: #fff;
-}
-
-.primary-action {
-  min-width: 116px;
-  height: 36px;
+.btn-ghost:hover:not(:disabled) { border-color: #cbd5e1; color: #334155; box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
+.btn-primary {
+  height: 34px;
   padding: 0 16px;
-  box-shadow: 0 12px 24px rgba(7, 193, 96, 0.18);
+  background: #07c160;
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(7,193,96,0.2);
 }
-
-.empty-import-action {
-  width: 100%;
-  height: 42px;
+.btn-primary:hover:not(:disabled) { background: #06ad56; box-shadow: 0 6px 16px rgba(7,193,96,0.28); }
+.btn-danger {
+  height: 30px;
+  padding: 0 10px;
+  background: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
 }
-
-.ghost-action:disabled,
-.primary-action:disabled,
-.empty-import-action:disabled,
-.danger-text-btn:disabled {
-  opacity: 0.7;
+.btn-danger:hover:not(:disabled) { background: #dc2626; color: #fff; border-color: #dc2626; }
+.btn-sm { height: 30px; font-size: 12px; padding: 0 12px; }
+.btn-ghost:disabled, .btn-primary:disabled, .btn-danger:disabled {
+  opacity: 0.55;
   cursor: not-allowed;
 }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
 
-.hidden-file-input {
-  display: none;
-}
-
-.workspace-grid {
-  padding: 18px 24px;
-}
-
-.shelf-panel {
-  padding: 24px;
-  border-radius: 28px;
-  border: 1px solid rgba(217, 224, 217, 0.96);
-  background: rgba(255, 255, 255, 0.8);
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.05);
-  backdrop-filter: blur(16px);
-}
-
-.panel-header {
+.confirm-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 18px;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.28);
+  backdrop-filter: blur(4px);
 }
 
-.panel-title {
-  color: #1f2937;
+.confirm-dialog {
+  width: min(320px, 100%);
+  padding: 18px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.16);
+}
+
+.confirm-title {
   font-size: 16px;
-  font-weight: 600;
+  font-weight: 700;
+  color: #1e293b;
 }
 
-.panel-badge {
-  flex-shrink: 0;
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: rgba(243, 244, 246, 0.9);
-  color: #6b7280;
+.confirm-text {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #64748b;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/* ── Main ── */
+.lib-main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+}
+.lib-main::-webkit-scrollbar { width: 5px; }
+.lib-main::-webkit-scrollbar-track { background: transparent; }
+.lib-main::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12); border-radius: 10px; }
+
+/* ── Shelf Card ── */
+.shelf-card {
+  background: rgba(255,255,255,0.72);
+  border: 1px solid rgba(255,255,255,0.9);
+  border-radius: 20px;
+  padding: 20px 24px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.03);
+}
+.shelf-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.shelf-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1e293b;
+}
+.shelf-badge {
   font-size: 11px;
   font-weight: 600;
+  color: #94a3b8;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #f1f5f9;
 }
 
-.loading-shelf,
-.empty-shelf {
-  margin-top: 22px;
-  min-height: 280px;
-  border-radius: 24px;
-  border: 1px dashed rgba(189, 199, 189, 0.95);
-  background: linear-gradient(180deg, rgba(248, 250, 248, 0.9) 0%, rgba(240, 244, 240, 0.95) 100%);
+/* ── Empty / Loading ── */
+.empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  min-height: 300px;
+  gap: 8px;
+  color: #94a3b8;
+  font-size: 14px;
   text-align: center;
 }
-
-.loading-shelf {
-  gap: 10px;
-  color: #5f6b63;
-  font-size: 14px;
+.empty-state h3 { color: #1e293b; font-size: 18px; font-weight: 700; }
+.empty-hint { max-width: 280px; font-size: 13px; line-height: 1.6; color: #94a3b8; margin-bottom: 12px; }
+.empty-icon-wrap {
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  background: rgba(7,193,96,0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #07c160;
+  margin-bottom: 8px;
 }
+.text-green { color: #07c160; }
 
-.empty-shelf h2 {
-  color: #1f2937;
-  font-size: 20px;
-  font-weight: 600;
-}
-
-.empty-shelf p {
-  margin-top: 12px;
-  max-width: 34ch;
-  color: #6b7280;
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.empty-import-action {
-  max-width: 220px;
-  margin-top: 20px;
-}
-
+/* ── Book Grid ── */
 .book-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 14px;
-  margin-top: 22px;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 16px;
 }
 
+/* ── Book Card ── */
 .book-card {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 14px;
-  border-radius: 18px;
   background: #fff;
-  border: 1px solid rgba(229, 231, 235, 0.95);
-  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.04);
+  border: 1px solid #f1f5f9;
+  border-radius: 14px;
+  padding: 10px;
+  transition: transform 0.25s, box-shadow 0.25s;
+}
+.book-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.07);
 }
 
-.book-cover-shell {
+/* ── Cover ── */
+.cover-wrap {
   position: relative;
   width: 100%;
-  aspect-ratio: 3 / 4;
-  border-radius: 18px;
-  overflow: hidden;
-  background: linear-gradient(180deg, #e6ece6 0%, #dce4dc 100%);
+  height: 200px;
+  border-radius: 10px;
+  background: #f1f5f9;
 }
-
-.book-cover {
+.cover-img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
+  transition: transform 0.5s;
+  border-radius: 10px;
 }
-
-.book-cover-placeholder {
+.book-card:hover .cover-img { transform: scale(1.03); }
+.cover-placeholder {
   width: 100%;
   height: 100%;
-  padding: 16px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  background:
-    linear-gradient(145deg, rgba(7, 193, 96, 0.9) 0%, rgba(9, 161, 84, 0.92) 100%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0));
+  background: linear-gradient(145deg, rgba(7,193,96,0.85) 0%, rgba(5,140,70,0.9) 100%);
   color: #fff;
+  border-radius: 10px;
 }
-
-.cover-format {
+.cover-format-tag {
   align-self: flex-start;
-  padding: 4px 8px;
-  border-radius: 999px;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.2);
 }
-
-.cover-format {
-  background: rgba(255, 255, 255, 0.16);
-}
-
-.cover-title {
-  font-size: 18px;
+.cover-title-text {
+  font-size: 14px;
   font-weight: 700;
-  line-height: 1.35;
+  line-height: 1.3;
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
-.status-pill {
+/* ── Cover Menu ── */
+.cover-menu-anchor {
   position: absolute;
-  top: 12px;
-  right: 12px;
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.92);
-  font-size: 11px;
-  font-weight: 700;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
+  top: 6px;
+  right: 6px;
+  z-index: 10;
 }
-
-.tone-imported {
-  color: #03874d;
-}
-
-.tone-processing {
-  color: #1d4ed8;
-}
-
-.tone-ready {
-  color: #166534;
-}
-
-.tone-limited {
-  color: #b45309;
-}
-
-.tone-failed {
-  color: #b91c1c;
-}
-
-.book-meta h3 {
-  color: #1f2937;
-  font-size: 16px;
-  font-weight: 700;
-  line-height: 1.5;
-}
-
-.book-author {
-  margin-top: 4px;
-  color: #6b7280;
-  font-size: 12px;
-  line-height: 1.7;
-}
-
-.binding-banner {
-  margin-top: 10px;
-  display: inline-flex;
+.cover-menu-btn {
+  display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  border-radius: 10px;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
   border: none;
+  background: rgba(255,255,255,0.85);
+  backdrop-filter: blur(8px);
+  color: #64748b;
   cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+  transition: all 0.2s;
+  opacity: 0;
+}
+.book-card:hover .cover-menu-btn { opacity: 1; }
+.cover-menu-btn:hover {
+  background: rgba(255,255,255,0.95);
+  color: #1e293b;
+  box-shadow: 0 4px 10px rgba(0,0,0,0.14);
+}
+.cover-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 120px;
+  padding: 4px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  animation: fadeIn 0.15s ease-out;
+}
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
   font-size: 12px;
   font-weight: 600;
-  transition: transform 0.18s ease, opacity 0.18s ease;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.dropdown-item-danger {
+  color: #dc2626;
+}
+.dropdown-item-danger:hover {
+  background: #fef2f2;
+}
+.dropdown-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
-.binding-banner:hover {
-  transform: translateY(-1px);
+/* ── Meta ── */
+.book-meta {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  padding: 8px 2px 2px;
+}
+.book-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1e293b;
+  line-height: 1.4;
+  min-height: calc(2 * 1.4em); /* always reserve 2 lines */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.book-card:hover .book-title { color: #07c160; }
+.book-author {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.binding-valid {
-  color: #166534;
-  background: rgba(34, 197, 94, 0.1);
+/* ── Binding Button ── */
+.binding-btn {
+  margin-top: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  transition: all 0.2s;
 }
+.bind-valid { color: #16a34a; background: rgba(34,197,94,0.08); }
+.bind-valid:hover { background: rgba(34,197,94,0.15); }
+.bind-invalid { color: #dc2626; background: rgba(248,113,113,0.1); }
+.bind-invalid:hover { background: rgba(248,113,113,0.18); }
+.bind-unbound { color: #64748b; background: #f1f5f9; }
+.bind-unbound:hover { background: #e2e8f0; }
 
-.binding-invalid {
-  color: #b91c1c;
-  background: rgba(248, 113, 113, 0.14);
-}
-
-.binding-empty {
-  color: #5f6b63;
-  background: rgba(226, 232, 240, 0.65);
-}
-
-.edit-panel {
-  padding: 14px;
-  border-radius: 14px;
-  background: #f8faf8;
-  border: 1px solid rgba(229, 231, 235, 0.95);
-}
-
-.field {
+/* ── Edit Overlay ── */
+.edit-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  padding: 14px;
+  background: rgba(255,255,255,0.96);
+  backdrop-filter: blur(16px);
+  border-radius: 14px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.1);
+  justify-content: center;
+  animation: fadeIn 0.2s ease-out;
 }
-
-.field span {
-  color: #4b5563;
-  font-size: 12px;
-  font-weight: 600;
+.edit-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #475569;
 }
-
-.field input,
-.field select {
+.edit-select {
   width: 100%;
-  height: 40px;
-  border-radius: 12px;
-  border: 1px solid rgba(204, 214, 204, 0.95);
-  background: rgba(255, 255, 255, 0.95);
-  color: #1f2937;
-  font-size: 13px;
-  padding: 0 12px;
-  outline: none;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease;
-}
-
-.field input:focus,
-.field select:focus {
-  border-color: rgba(7, 193, 96, 0.68);
-  box-shadow: 0 0 0 3px rgba(7, 193, 96, 0.12);
-}
-
-.edit-actions {
-  margin-top: 14px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.danger-text-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: none;
-  background: transparent;
-  color: #dc2626;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
   font-size: 12px;
-  font-weight: 600;
+  color: #334155;
+  outline: none;
+  -webkit-app-region: no-drag;
   cursor: pointer;
 }
-
-.inline-ghost,
-.inline-primary {
-  min-width: 96px;
+.edit-select:focus { border-color: #07c160; box-shadow: 0 0 0 2px rgba(7,193,96,0.12); }
+.edit-row {
+  display: flex;
+  gap: 6px;
 }
+.edit-row .btn-ghost, .edit-row .btn-danger { flex: 1; }
 
+/* ── Animations ── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
 .spinning {
   animation: spin 0.8s linear infinite;
 }
-
 @keyframes spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+  to { transform: rotate(360deg); }
 }
 
+/* ── Responsive ── */
 @media (max-width: 767px) {
-  .library-header,
-  .workspace-grid {
-    padding-left: 16px;
-    padding-right: 16px;
-  }
-
-  .library-header {
-    padding-top: 16px;
-    padding-right: 16px;
-  }
-
-  .library-title-row,
-  .panel-header {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .header-actions {
-    width: 100%;
-    flex-wrap: wrap;
-  }
-
-  .ghost-action,
-  .primary-action {
-    flex: 1;
-  }
-
-  .back-btn {
-    display: inline-flex;
-    align-items: center;
-  }
-
-  .shelf-panel {
-    border-radius: 22px;
-  }
-
-  .loading-shelf,
-  .empty-shelf {
-    min-height: 300px;
-    padding: 20px 16px;
-  }
-
-  .empty-shelf h2 {
-    font-size: 18px;
-  }
-
-  .book-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .edit-actions {
-    flex-direction: column;
-    align-items: stretch;
-  }
+  .lib-header { padding: 12px 16px; }
+  .lib-main { padding: 16px; }
+  .lib-title-group .back-btn { display: flex; }
+  .lib-header-inner { flex-direction: column; gap: 10px; align-items: stretch; }
+  .lib-actions { width: 100%; }
+  .lib-actions .btn-ghost, .lib-actions .btn-primary { flex: 1; }
+  .book-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; }
+  .shelf-card { padding: 16px; border-radius: 16px; }
 }
 </style>
