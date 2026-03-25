@@ -59,3 +59,4 @@ server/logs/app.log.*
 server/logs/prompt.log.*
 /logs/app.log.*
 server/data/uploads/audio
+server/data/library/

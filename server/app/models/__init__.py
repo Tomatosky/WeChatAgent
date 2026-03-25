@@ -1,4 +1,5 @@
 from .llm import LLMConfig
+from .book import Book
 from .friend import Friend
 from .friend_template import FriendTemplate
 from .embedding import EmbeddingSetting  

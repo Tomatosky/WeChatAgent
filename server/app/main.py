@@ -116,11 +116,15 @@ app.add_middleware(
 # 挂载静态文件目录
 uploads_dir = os.path.join(settings.DATA_DIR, "uploads")
 os.makedirs(uploads_dir, exist_ok=True)
+library_dir = os.path.join(settings.DATA_DIR, "library")
+os.makedirs(os.path.join(library_dir, "files"), exist_ok=True)
+os.makedirs(os.path.join(library_dir, "covers"), exist_ok=True)
 base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
 static_dir = base_dir / "static"
 (static_dir / "avatars" / "presets").mkdir(parents=True, exist_ok=True)
 
 app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
+app.mount("/library", StaticFiles(directory=library_dir), name="library")
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 # 在 API 定义后刷新一次，确保 Logger 被激活

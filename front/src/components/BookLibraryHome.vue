@@ -1,19 +1,32 @@
 <script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
 import {
   BookOpen,
-  Import,
-  MessagesSquare,
-  Sparkles,
-  Library,
-  BookmarkCheck,
-  ArrowRight,
+  FilePlus2,
+  LoaderCircle,
+  RefreshCw,
 } from 'lucide-vue-next'
+
+import { getStaticUrl } from '@/api/base'
+import { getBooks, importBook, type Book } from '@/api/book'
+import { useToast } from '@/composables/useToast'
 
 const emit = defineEmits<{
   (e: 'back-chat'): void
 }>()
 
+const toast = useToast()
 const isElectron = Boolean(window.WeAgentChat?.windowControls)
+const fileInput = ref<HTMLInputElement | null>(null)
+const books = ref<Book[]>([])
+const isLoading = ref(false)
+const isImporting = ref(false)
+
+const MAX_BOOK_FILE_SIZE = 200 * 1024 * 1024
+const accept = '.epub,.pdf,.mobi,.azw,.azw3,.txt'
+const allowedExtensions = new Set(['.epub', '.pdf', '.mobi', '.azw', '.azw3', '.txt'])
+
+const totalBooks = computed(() => books.value.length)
 
 const handleToggleMaximize = () => {
   if (!isElectron) return
@@ -29,31 +42,82 @@ const handleHeaderContextMenu = (event: MouseEvent) => {
   })
 }
 
-const capabilities = [
-  {
-    title: '图书导入',
-    description: '后续会在这里接入 EPUB、PDF、TXT 等格式的文件导入入口与处理状态。',
-    icon: Import,
-  },
-  {
-    title: '作者绑定',
-    description: '每本书都可以绑定已有 AI 好友，后续阅读和伴读聊天会按书籍维度隔离。',
-    icon: Sparkles,
-  },
-  {
-    title: '伴读聊天',
-    description: '阅读器与聊天侧栏会在后续 Story 接入，这里先把一级导航和页面容器稳定下来。',
-    icon: MessagesSquare,
-  },
-] as const
+const getStatusLabel = (status: string) => {
+  switch (status) {
+    case 'imported':
+      return '已导入'
+    case 'processing':
+      return '处理中'
+    case 'ready':
+      return '可阅读'
+    case 'limited':
+      return '受限可用'
+    case 'failed':
+      return '导入失败'
+    default:
+      return status
+  }
+}
 
-const deliveryNotes = [
-  '导航方案：沿用现有单页主视图切换，不新增路由。',
-  '恢复策略：刷新或重开应用后，恢复最近一次一级入口；非法值回落到聊天页。',
-  '本 Story 仅交付入口与基础界面，不接入图书 CRUD、导入解析或阅读器。',
-] as const
+const getFormatLabel = (formatType: string) => formatType.toUpperCase()
 
-const statusStages = ['imported', 'processing', 'ready', 'limited', 'failed'] as const
+const getCoverUrl = (coverUrl?: string | null) => getStaticUrl(coverUrl) ?? ''
+
+const getFileExtension = (fileName: string) => {
+  const ext = fileName.includes('.') ? fileName.slice(fileName.lastIndexOf('.')) : ''
+  return ext.toLowerCase()
+}
+
+const loadBooks = async () => {
+  isLoading.value = true
+  try {
+    books.value = await getBooks(0, 200)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '获取图书列表失败'
+    toast.error(message)
+  } finally {
+    isLoading.value = false
+  }
+}
+
+const openImportPicker = () => {
+  if (isImporting.value) return
+  fileInput.value?.click()
+}
+
+const handleFileChange = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const selectedFile = input.files?.[0]
+  input.value = ''
+  if (!selectedFile) return
+
+  const ext = getFileExtension(selectedFile.name)
+  if (!allowedExtensions.has(ext)) {
+    toast.error('暂不支持该文件格式，请选择 EPUB、PDF、MOBI、AZW/AZW3 或 TXT 文件。')
+    return
+  }
+
+  if (selectedFile.size > MAX_BOOK_FILE_SIZE) {
+    toast.error('图书文件过大，当前仅支持 200MB 以内的文件。')
+    return
+  }
+
+  isImporting.value = true
+  try {
+    const imported = await importBook(selectedFile)
+    books.value = [imported, ...books.value.filter(book => book.id !== imported.id)]
+    toast.success(`《${imported.title}》已导入图书馆`)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '导入图书失败'
+    toast.error(message)
+  } finally {
+    isImporting.value = false
+  }
+}
+
+onMounted(() => {
+  void loadBooks()
+})
 </script>
 
 <template>
@@ -65,110 +129,81 @@ const statusStages = ['imported', 'processing', 'ready', 'limited', 'failed'] as
             <button class="back-btn" @click="emit('back-chat')">返回</button>
             <BookOpen :size="18" />
             <span>与作者共读</span>
-            <span class="phase-pill">主界面入口已接入</span>
           </div>
           <div class="header-actions">
-            <button class="ghost-action" disabled>导入图书</button>
-            <button class="ghost-action" disabled>管理图书</button>
+            <button class="ghost-action" :disabled="isLoading || isImporting" @click="loadBooks">
+              <RefreshCw :size="14" :class="{ spinning: isLoading }" />
+              刷新列表
+            </button>
+            <button class="primary-action" :disabled="isImporting" @click="openImportPicker">
+              <LoaderCircle v-if="isImporting" :size="14" class="spinning" />
+              <FilePlus2 v-else :size="14" />
+              {{ isImporting ? '导入中...' : '导入图书' }}
+            </button>
+            <input
+              ref="fileInput"
+              class="hidden-file-input"
+              type="file"
+              :accept="accept"
+              @change="handleFileChange">
           </div>
         </div>
-        <p class="library-subtitle">你的个人图书库入口已经接入主界面，后续会在这里完成导入、管理、阅读与伴读聊天。</p>
       </div>
     </header>
-
-    <section class="hero-panel">
-      <div class="hero-copy">
-        <span class="eyebrow">Book Space</span>
-        <h1>把书带进唯信，再和“作者”一起读。</h1>
-        <p>
-          当前版本先交付图书库一级入口、页面骨架和导航恢复策略。你已经可以从左侧导航稳定进入这里，并在刷新后回到最近一次一级入口。
-        </p>
-      </div>
-
-      <div class="hero-card">
-        <div class="hero-card-head">
-          <Library :size="18" />
-          <span>本 Story 交付范围</span>
-        </div>
-        <ul class="delivery-list">
-          <li v-for="note in deliveryNotes" :key="note">{{ note }}</li>
-        </ul>
-      </div>
-    </section>
-
-    <section class="capability-grid">
-      <article v-for="item in capabilities" :key="item.title" class="capability-card">
-        <div class="capability-icon">
-          <component :is="item.icon" :size="18" />
-        </div>
-        <div class="capability-title">{{ item.title }}</div>
-        <p class="capability-description">{{ item.description }}</p>
-      </article>
-    </section>
 
     <section class="workspace-grid">
       <article class="shelf-panel">
         <div class="panel-header">
           <div>
-            <div class="panel-title">图书管理主区域</div>
-            <p class="panel-subtitle">后续 Story 会在这里接入真实图书数据、封面列表、搜索筛选和作者绑定能力。</p>
+            <div class="panel-title">我的图书馆</div>
           </div>
-          <span class="panel-badge">基础布局</span>
+          <span class="panel-badge">{{ totalBooks ? `共 ${totalBooks} 本` : '等待导入' }}</span>
         </div>
 
-        <div class="empty-shelf">
+        <div v-if="isLoading" class="loading-shelf">
+          <LoaderCircle :size="22" class="spinning" />
+          <span>正在加载图书列表...</span>
+        </div>
+
+        <div v-else-if="!books.length" class="empty-shelf">
           <div class="shelf-illustration" aria-hidden="true">
             <span class="book-spine spine-green"></span>
             <span class="book-spine spine-dark"></span>
             <span class="book-spine spine-light"></span>
             <span class="book-spine spine-soft"></span>
           </div>
-          <h2>图书库容器已准备完成</h2>
-          <p>当前没有接入真实书籍数据。本页面先承担导航落点和主界面结构职责，后续能力将在此基础上逐步展开。</p>
-          <div class="status-row">
-            <span v-for="stage in statusStages" :key="stage" class="status-chip">
-              {{ stage }}
-            </span>
-          </div>
+          <h2>图书馆里还没有书</h2>
+          <p>先导入一本 EPUB、PDF、MOBI、AZW/AZW3 或 TXT 文件。导入后系统会把文件复制到默认图书馆文件夹，并尽量提取基础信息。</p>
+          <button class="empty-import-action" :disabled="isImporting" @click="openImportPicker">
+            <LoaderCircle v-if="isImporting" :size="16" class="spinning" />
+            <FilePlus2 v-else :size="16" />
+            {{ isImporting ? '导入中...' : '导入第一本书' }}
+          </button>
+        </div>
+
+        <div v-else class="book-grid">
+          <article v-for="book in books" :key="book.id" class="book-card">
+            <div class="book-cover-shell">
+              <img
+                v-if="getCoverUrl(book.cover_url)"
+                :src="getCoverUrl(book.cover_url)"
+                :alt="`${book.title} 封面`"
+                class="book-cover"
+                loading="lazy">
+              <div v-else class="book-cover-placeholder">
+                <span class="cover-format">{{ getFormatLabel(book.format_type) }}</span>
+                <span class="cover-title">{{ book.title }}</span>
+              </div>
+              <span class="status-pill" :class="`status-${book.status}`">{{ getStatusLabel(book.status) }}</span>
+            </div>
+
+            <div class="book-meta">
+              <h3>{{ book.title }}</h3>
+              <p class="book-author">{{ book.author || '作者待识别' }}</p>
+            </div>
+          </article>
         </div>
       </article>
-
-      <aside class="roadmap-panel">
-        <div class="panel-title">下一步能力</div>
-        <div class="roadmap-list">
-          <div class="roadmap-item">
-            <div class="roadmap-index">01</div>
-            <div class="roadmap-content">
-              <div class="roadmap-name">导入与解析</div>
-              <p>接入多格式导入、处理状态和失败原因展示。</p>
-            </div>
-          </div>
-          <div class="roadmap-item">
-            <div class="roadmap-index">02</div>
-            <div class="roadmap-content">
-              <div class="roadmap-name">图书管理</div>
-              <p>支持封面列表、搜索、删除和绑定作者好友。</p>
-            </div>
-          </div>
-          <div class="roadmap-item">
-            <div class="roadmap-index">03</div>
-            <div class="roadmap-content">
-              <div class="roadmap-name">阅读与伴读</div>
-              <p>进入阅读器后，基于当前阅读位置与作者 AI 进行上下文聊天。</p>
-            </div>
-          </div>
-        </div>
-
-        <button class="return-action" @click="emit('back-chat')">
-          返回聊天主页
-          <ArrowRight :size="16" />
-        </button>
-
-        <div class="footnote">
-          <BookmarkCheck :size="16" />
-          <span>刷新恢复按最近一级入口处理；未来若进入阅读器子视图，也将先回落到“与作者共读”入口。</span>
-        </div>
-      </aside>
     </section>
   </div>
 </template>
@@ -232,27 +267,10 @@ const statusStages = ['imported', 'processing', 'ready', 'limited', 'failed'] as
   font-weight: 600;
 }
 
-.phase-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: rgba(7, 193, 96, 0.12);
-  color: #03874d;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.library-subtitle {
-  max-width: 820px;
-  font-size: 13px;
-  line-height: 1.6;
-  color: #6b7280;
-}
-
 .back-btn,
 .ghost-action,
-.return-action {
+.primary-action,
+.empty-import-action {
   -webkit-app-region: no-drag;
 }
 
@@ -277,146 +295,83 @@ const statusStages = ['imported', 'processing', 'ready', 'limited', 'failed'] as
   gap: 10px;
 }
 
+.ghost-action,
+.primary-action,
+.empty-import-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: none;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
+  cursor: pointer;
+}
+
 .ghost-action {
-  min-width: 96px;
-  height: 34px;
+  min-width: 102px;
+  height: 36px;
   padding: 0 14px;
   border: 1px solid rgba(202, 210, 202, 0.9);
-  border-radius: 10px;
   background: rgba(255, 255, 255, 0.84);
-  color: #8b9097;
-  font-size: 12px;
+  color: #5f6b63;
+}
+
+.ghost-action:hover:not(:disabled),
+.primary-action:hover:not(:disabled),
+.empty-import-action:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.primary-action,
+.empty-import-action {
+  background: linear-gradient(135deg, #07c160 0%, #10a04e 100%);
+  color: #fff;
+}
+
+.primary-action {
+  min-width: 116px;
+  height: 36px;
+  padding: 0 16px;
+  box-shadow: 0 12px 24px rgba(7, 193, 96, 0.18);
+}
+
+.empty-import-action {
+  width: 100%;
+  height: 42px;
+}
+
+.ghost-action:disabled,
+.primary-action:disabled,
+.empty-import-action:disabled {
+  opacity: 0.7;
   cursor: not-allowed;
 }
 
-.hero-panel,
-.capability-grid,
+.hidden-file-input {
+  display: none;
+}
+
 .workspace-grid {
   padding-left: 24px;
   padding-right: 24px;
 }
 
-.hero-panel {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.86fr);
-  gap: 20px;
-  padding-top: 24px;
-}
-
-.hero-copy,
-.hero-card,
-.capability-card,
-.shelf-panel,
-.roadmap-panel {
+.shelf-panel {
   border: 1px solid rgba(217, 224, 217, 0.96);
   background: rgba(255, 255, 255, 0.8);
   box-shadow: 0 18px 40px rgba(15, 23, 42, 0.05);
   backdrop-filter: blur(16px);
 }
 
-.hero-copy {
-  padding: 28px;
-  border-radius: 28px;
-}
-
-.eyebrow {
-  display: inline-flex;
-  padding: 5px 10px;
-  border-radius: 999px;
-  background: rgba(7, 193, 96, 0.08);
-  color: #0a8b52;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.hero-copy h1 {
-  margin-top: 18px;
-  color: #1f2937;
-  font-size: clamp(26px, 4vw, 38px);
-  line-height: 1.16;
-  font-weight: 700;
-  max-width: 12ch;
-}
-
-.hero-copy p {
-  margin-top: 16px;
-  max-width: 58ch;
-  color: #5f6b63;
-  font-size: 14px;
-  line-height: 1.8;
-}
-
-.hero-card {
-  padding: 24px;
-  border-radius: 24px;
-}
-
-.hero-card-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: #1f2937;
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.delivery-list {
-  margin: 18px 0 0;
-  padding-left: 18px;
-  color: #5f6b63;
-  font-size: 13px;
-  line-height: 1.8;
-}
-
-.capability-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  padding-top: 18px;
-}
-
-.capability-card {
-  padding: 22px;
-  border-radius: 24px;
-}
-
-.capability-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 14px;
-  background: linear-gradient(135deg, rgba(7, 193, 96, 0.14), rgba(7, 193, 96, 0.05));
-  color: #0a8b52;
-}
-
-.capability-title {
-  margin-top: 18px;
-  color: #1f2937;
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.capability-description {
-  margin-top: 10px;
-  color: #6b7280;
-  font-size: 13px;
-  line-height: 1.7;
-}
-
 .workspace-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(300px, 0.78fr);
-  gap: 20px;
   padding-top: 18px;
-  padding-bottom: 24px;
+  padding-bottom: 18px;
 }
 
-.shelf-panel,
-.roadmap-panel {
+.shelf-panel {
   border-radius: 28px;
 }
 
@@ -442,7 +397,7 @@ const statusStages = ['imported', 'processing', 'ready', 'limited', 'failed'] as
   color: #6b7280;
   font-size: 13px;
   line-height: 1.7;
-  max-width: 60ch;
+  max-width: 62ch;
 }
 
 .panel-badge {
@@ -455,6 +410,7 @@ const statusStages = ['imported', 'processing', 'ready', 'limited', 'failed'] as
   font-weight: 600;
 }
 
+.loading-shelf,
 .empty-shelf {
   margin-top: 22px;
   min-height: 360px;
@@ -468,6 +424,12 @@ const statusStages = ['imported', 'processing', 'ready', 'limited', 'failed'] as
   justify-content: center;
   padding: 24px;
   text-align: center;
+}
+
+.loading-shelf {
+  gap: 10px;
+  color: #5f6b63;
+  font-size: 14px;
 }
 
 .shelf-illustration {
@@ -521,121 +483,133 @@ const statusStages = ['imported', 'processing', 'ready', 'limited', 'failed'] as
   line-height: 1.8;
 }
 
-.status-row {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 10px;
+.empty-import-action {
+  max-width: 220px;
+  margin-top: 20px;
+}
+
+.book-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px;
   margin-top: 22px;
 }
 
-.status-chip {
-  padding: 8px 12px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.94);
-  border: 1px solid rgba(215, 221, 215, 0.96);
-  color: #5f6b63;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.roadmap-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  padding: 24px;
-}
-
-.roadmap-list {
+.book-card {
   display: flex;
   flex-direction: column;
   gap: 14px;
-}
-
-.roadmap-item {
-  display: flex;
-  gap: 12px;
   padding: 16px;
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(248, 250, 248, 0.98) 0%, rgba(241, 245, 241, 0.98) 100%);
+  border: 1px solid rgba(221, 228, 221, 0.98);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.05);
+}
+
+.book-cover-shell {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 3 / 4;
   border-radius: 18px;
-  background: linear-gradient(180deg, rgba(247, 249, 247, 0.95) 0%, rgba(239, 243, 239, 0.95) 100%);
-  border: 1px solid rgba(223, 228, 223, 0.96);
+  overflow: hidden;
+  background: linear-gradient(180deg, #e6ece6 0%, #dce4dc 100%);
 }
 
-.roadmap-index {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 12px;
-  background: rgba(7, 193, 96, 0.12);
-  color: #03874d;
-  font-size: 13px;
+.book-cover {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.book-cover-placeholder {
+  width: 100%;
+  height: 100%;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background:
+    linear-gradient(145deg, rgba(7, 193, 96, 0.9) 0%, rgba(9, 161, 84, 0.92) 100%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0));
+  color: #fff;
+}
+
+.cover-format {
+  align-self: flex-start;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  font-size: 11px;
   font-weight: 700;
+  letter-spacing: 0.08em;
 }
 
-.roadmap-name {
+.cover-title {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.status-pill {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
   color: #1f2937;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 700;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
 }
 
-.roadmap-content p {
+.status-imported {
+  color: #03874d;
+}
+
+.status-failed {
+  color: #b91c1c;
+}
+
+.status-limited {
+  color: #b45309;
+}
+
+.book-meta h3 {
+  color: #1f2937;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.book-author,
+.book-status-detail {
   margin-top: 6px;
   color: #6b7280;
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.return-action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  width: 100%;
-  height: 42px;
-  border: none;
-  border-radius: 14px;
-  background: linear-gradient(135deg, #07c160 0%, #10a04e 100%);
-  color: #fff;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: transform 0.18s ease, box-shadow 0.18s ease;
-}
-
-.return-action:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 12px 24px rgba(7, 193, 96, 0.22);
-}
-
-.footnote {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 14px 16px;
-  border-radius: 16px;
-  background: rgba(248, 250, 248, 0.9);
-  color: #5f6b63;
   font-size: 12px;
   line-height: 1.7;
 }
 
-@media (max-width: 1080px) {
-  .hero-panel,
-  .workspace-grid {
-    grid-template-columns: 1fr;
-  }
+.spinning {
+  animation: spin 0.8s linear infinite;
+}
 
-  .capability-grid {
-    grid-template-columns: 1fr;
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
   }
 }
 
 @media (max-width: 767px) {
   .library-header,
-  .hero-panel,
-  .capability-grid,
   .workspace-grid {
     padding-left: 16px;
     padding-right: 16px;
@@ -654,9 +628,11 @@ const statusStages = ['imported', 'processing', 'ready', 'limited', 'failed'] as
 
   .header-actions {
     width: 100%;
+    flex-wrap: wrap;
   }
 
-  .ghost-action {
+  .ghost-action,
+  .primary-action {
     flex: 1;
   }
 
@@ -665,23 +641,11 @@ const statusStages = ['imported', 'processing', 'ready', 'limited', 'failed'] as
     align-items: center;
   }
 
-  .hero-copy,
-  .hero-card,
-  .shelf-panel,
-  .roadmap-panel,
-  .capability-card {
+  .shelf-panel {
     border-radius: 22px;
   }
 
-  .hero-copy {
-    padding: 24px 18px;
-  }
-
-  .hero-copy h1 {
-    max-width: none;
-    font-size: 28px;
-  }
-
+  .loading-shelf,
   .empty-shelf {
     min-height: 300px;
     padding: 20px 16px;
@@ -689,6 +653,10 @@ const statusStages = ['imported', 'processing', 'ready', 'limited', 'failed'] as
 
   .empty-shelf h2 {
     font-size: 21px;
+  }
+
+  .book-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>

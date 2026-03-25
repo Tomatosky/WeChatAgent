@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.endpoints import health, llm, friend, chat, friend_template, upload, voice
+from app.api.endpoints import health, llm, friend, chat, friend_template, upload, voice, book
 
 api_router = APIRouter()
 api_router.include_router(health.router, tags=["health"])
@@ -9,6 +9,7 @@ api_router.include_router(friend_template.router, prefix="/friend-templates", ta
 api_router.include_router(chat.router, prefix="/chat", tags=["chat"])
 api_router.include_router(upload.router, prefix="/upload", tags=["upload"])
 api_router.include_router(voice.router, prefix="/voice", tags=["voice"])
+api_router.include_router(book.router, prefix="/books", tags=["books"])
 
 from app.api.endpoints import embedding, settings, profile, group, group_chat, group_auto_drive
 api_router.include_router(embedding.router, prefix="/embedding-settings", tags=["embedding-settings"])
