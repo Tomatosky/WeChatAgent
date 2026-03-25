@@ -23,6 +23,7 @@ import { useToast } from '@/composables/useToast'
 
 const emit = defineEmits<{
   (e: 'back-chat'): void
+  (e: 'open-reader', book: Book): void
 }>()
 
 const toast = useToast()
@@ -94,6 +95,12 @@ const getBindingLabel = (book: Book) => {
 
 const replaceBookInList = (nextBook: Book) => {
   books.value = books.value.map(book => (book.id === nextBook.id ? nextBook : book))
+}
+
+const openBookReader = (book: Book) => {
+  if (editingBookId.value === book.id) return
+  closeAllMenus()
+  emit('open-reader', book)
 }
 
 const loadBooks = async () => {
@@ -310,7 +317,7 @@ onBeforeUnmount(() => {
 
         <!-- Book Grid -->
         <div v-else class="book-grid">
-          <article v-for="book in books" :key="book.id" class="book-card">
+          <article v-for="book in books" :key="book.id" class="book-card" @click="openBookReader(book)">
             <!-- Cover -->
             <div class="cover-wrap">
               <img
@@ -348,14 +355,14 @@ onBeforeUnmount(() => {
             <div class="book-meta">
               <h3 class="book-title">{{ book.title }}</h3>
               <p class="book-author">{{ book.author || '原作者待补充' }}</p>
-              <button type="button" class="binding-btn" :class="'bind-' + book.author_binding_status" @click="startEditing(book)">
+              <button type="button" class="binding-btn" :class="'bind-' + book.author_binding_status" @click.stop="startEditing(book)">
                 <UserRound :size="12" />
                 <span>{{ getBindingLabel(book) }}</span>
               </button>
             </div>
 
             <!-- Edit Overlay -->
-            <div v-if="editingBookId === book.id" class="edit-overlay">
+            <div v-if="editingBookId === book.id" class="edit-overlay" @click.stop>
               <label class="edit-label">绑定 AI 作者</label>
               <select v-model="editForm.aiFriendId" class="edit-select">
                 <option value="">暂不绑定</option>
@@ -605,6 +612,7 @@ onBeforeUnmount(() => {
   border: 1px solid #f1f5f9;
   border-radius: 14px;
   padding: 10px;
+  cursor: pointer;
   transition: transform 0.25s, box-shadow 0.25s;
 }
 .book-card:hover {

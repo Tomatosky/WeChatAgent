@@ -1,10 +1,11 @@
 ﻿<script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import IconSidebar from './components/IconSidebar.vue'
 import Sidebar from './components/Sidebar.vue'
 import ChatArea from './components/ChatArea.vue'
 import FriendGallery from './components/FriendGallery.vue'
 import BookLibraryHome from './components/BookLibraryHome.vue'
+import BookReaderView from './components/BookReaderView.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import ProfileDialog from './components/ProfileDialog.vue'
 import SetupWizard from './components/SetupWizard.vue'
@@ -20,6 +21,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useUpdateCheck } from '@/composables/useUpdateCheck'
 import UpdateNotifyDialog from './components/UpdateNotifyDialog.vue'
 
+import type { Book } from '@/api/book'
 import { checkHealth } from '@/api/health'
 import { MAIN_TAB_STORAGE_KEY, isMainTab, type MainTab } from '@/types/navigation'
 
@@ -33,9 +35,11 @@ const isFriendComposeOpen = ref(false)
 const isGroupComposeOpen = ref(false)
 const friendComposeMode = ref<'add' | 'edit'>('add')
 const friendComposeId = ref<number | null>(null)
+const selectedBook = ref<Book | null>(null)
 const sessionStore = useSessionStore()
 const settingsStore = useSettingsStore()
 const settingsDefaultTab = ref('llm')
+const isReadingBook = computed(() => activeTab.value === 'library' && selectedBook.value !== null)
 
 const {
   updateAvailable: isUpdateAvailable,
@@ -56,6 +60,9 @@ const persistPrimaryTab = (tab: MainTab) => {
 
 const applyActiveTab = (tab: MainTab, persist = true) => {
   activeTab.value = tab
+  if (tab !== 'library') {
+    selectedBook.value = null
+  }
   if (persist) {
     persistPrimaryTab(tab)
   }
@@ -71,6 +78,14 @@ const getStoredPrimaryTab = (): MainTab => {
 
 const updateActiveTab = (tab: MainTab) => {
   applyActiveTab(tab)
+}
+
+const handleOpenReader = (book: Book) => {
+  selectedBook.value = book
+}
+
+const handleCloseReader = () => {
+  selectedBook.value = null
 }
 
 const handleOpenGallery = () => {
@@ -159,7 +174,7 @@ const handleSetupComplete = () => {
 
     <div class="wechat-app">
       <!-- Icon Sidebar (always visible on desktop) -->
-      <div class="icon-sidebar-container">
+      <div v-if="!isReadingBook" class="icon-sidebar-container">
         <IconSidebar :active-tab="activeTab" @update:activeTab="updateActiveTab($event as MainTab)"
           @open-settings="handleOpenSettings('llm')" @open-profile="isProfileOpen = true" />
       </div>
@@ -183,10 +198,12 @@ const handleSetupComplete = () => {
 
 
       <!-- Main Chat Area -->
-      <main class="chat-container">
+      <main class="chat-container" :class="{ 'reading-mode': isReadingBook }">
         <FriendGallery v-if="activeTab === 'gallery'" @back-chat="updateActiveTab('chat')"
           @open-settings="handleOpenSettings" />
-        <BookLibraryHome v-else-if="activeTab === 'library'" @back-chat="updateActiveTab('chat')" />
+        <BookReaderView v-else-if="activeTab === 'library' && selectedBook" :book="selectedBook" @back="handleCloseReader" />
+        <BookLibraryHome v-else-if="activeTab === 'library'" @back-chat="updateActiveTab('chat')"
+          @open-reader="handleOpenReader" />
         <template v-else>
           <GroupChatArea v-if="sessionStore.chatType === 'group'" :is-sidebar-collapsed="!isSidebarOpen"
             @toggle-sidebar="toggleSidebar" @open-drawer="isDrawerOpen = true" @open-settings="handleOpenSettings" />
@@ -295,6 +312,10 @@ const handleSetupComplete = () => {
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+
+.chat-container.reading-mode {
+  width: 100%;
 }
 
 /* Mobile Overlay */

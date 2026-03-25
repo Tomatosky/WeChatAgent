@@ -1,5 +1,7 @@
 import { withApiBase } from './base'
 
+export type BookStatus = 'imported' | 'processing' | 'ready' | 'limited' | 'failed'
+
 export interface Book {
   id: number
   title: string
@@ -7,7 +9,7 @@ export interface Book {
   cover_url?: string | null
   file_name: string
   file_path: string
-  status: string
+  status: BookStatus
   status_detail?: string | null
   ai_friend_id?: number | null
   reading_location?: string | null

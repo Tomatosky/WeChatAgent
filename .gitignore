@@ -8,6 +8,10 @@
 node_modules/
 dist/
 dist-ssr/
+.vite/
+coverage/
+*.tsbuildinfo
+*.eslintcache
 *.local
 .pnpm-debug.log*
 
@@ -22,6 +26,8 @@ Thumbs.db
 # Project specific
 front/node_modules/
 front/dist/
+front/.vite/
+front/coverage/
 # Python
 __pycache__/
 *.py[cod]
@@ -34,11 +40,11 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
-var/
+/var/
 wheels/
 *.egg-info/
 .installed.cfg
