@@ -6,16 +6,27 @@ import {
   ChevronLeft,
   ChevronRight,
   Columns2,
+  ListTree,
   LoaderCircle,
   RefreshCw,
   ScrollText,
 } from 'lucide-vue-next'
 
-import type { Book } from '@/api/book'
+import { updateBookReadingLocation, type Book } from '@/api/book'
 import { getStaticUrl } from '@/api/base'
-import { loadFoliateViewModule, type FoliateViewRuntimeModule } from '@/lib/book-reader/foliate'
-import { makeTxtBook } from '@/lib/book-reader/txtBook'
+import ReaderTocPanel from '@/components/book-reader/ReaderTocPanel.vue'
 import { useToast } from '@/composables/useToast'
+import { loadFoliateViewModule, type FoliateViewRuntimeModule } from '@/lib/book-reader/foliate'
+import {
+  cacheReadingLocation,
+  createReaderAdapter,
+  loadCachedReadingLocation,
+  parseStoredReaderLocation,
+  serializeStoredReaderLocation,
+  type ReaderAdapter,
+  type TocItem,
+} from '@/lib/book-reader/readerAdapter'
+import { makeTxtBook } from '@/lib/book-reader/txtBook'
 
 const props = defineProps<{
   book: Book
@@ -25,29 +36,32 @@ const emit = defineEmits<{
   (e: 'back'): void
 }>()
 
-interface FoliateRelocateDetail {
-  fraction?: number
-  cfi?: string
-  tocItem?: {
-    label?: string
-  } | null
-  pageItem?: {
-    label?: string
-  } | null
-  location?: {
-    current?: number
-  } | null
-}
-
 interface FoliateRendererElement extends HTMLElement {
   setStyles?: (styles: string) => void
+  goTo?: (target: unknown) => Promise<void>
+}
+
+interface FoliateTocItem {
+  label?: string | null
+  href?: string | null
+  subitems?: FoliateTocItem[] | null
 }
 
 interface FoliateViewElement extends HTMLElement {
+  book?: {
+    toc?: FoliateTocItem[]
+    metadata?: {
+      title?: string | null
+    } | null
+  } | null
   renderer?: FoliateRendererElement
   isFixedLayout?: boolean
+  history?: {
+    pushState?: (state: unknown) => void
+  }
   open: (book: unknown) => Promise<void>
   init: (options: { lastLocation?: unknown; showTextStart?: boolean }) => Promise<void>
+  goTo: (target: unknown) => Promise<void>
   close: () => void
   prev: (distance?: number) => Promise<void>
   next: (distance?: number) => Promise<void>
@@ -65,18 +79,25 @@ interface ReaderBanner {
   detail: string
 }
 
+const LOCATION_PERSIST_DEBOUNCE_MS = 1200
+
 const toast = useToast()
 const viewerHost = ref<HTMLElement | null>(null)
 const viewer = shallowRef<FoliateViewElement | null>(null)
 const openedBookSource = shallowRef<ReaderBookSource | null>(null)
+const readerAdapter = shallowRef<ReaderAdapter | null>(null)
 const isLoading = ref(false)
 const loadError = ref<string | null>(null)
 const flowMode = ref<'paginated' | 'scrolled'>('paginated')
 const currentProgress = ref(0)
 const currentLabel = ref('等待打开')
 const currentDetail = ref('进入阅读器后可使用上一页 / 下一页浏览')
-const rememberedLocation = ref<unknown>(null)
+const tocItems = ref<TocItem[]>([])
+const isTocOpen = ref(false)
+const isLeaving = ref(false)
+const lastPersistedLocation = ref<string | null>(null)
 let openVersion = 0
+let persistTimer: number | null = null
 
 const bookFileUrl = computed(() => getStaticUrl(props.book.file_path) ?? '')
 const isBlockedByStatus = computed(() => ['processing', 'failed'].includes(props.book.status))
@@ -157,45 +178,27 @@ const getReaderContentStyles = () => `
   }
 `
 
-const parseStoredLocation = (value?: string | null) => {
-  if (!value) return null
-  const trimmed = value.trim()
-  if (!trimmed) return null
-
-  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-    try {
-      return JSON.parse(trimmed)
-    } catch {
-      return trimmed
-    }
+const clearPersistTimer = () => {
+  if (persistTimer !== null) {
+    window.clearTimeout(persistTimer)
+    persistTimer = null
   }
-
-  if (trimmed.startsWith('fraction:')) {
-    const fraction = Number(trimmed.replace('fraction:', ''))
-    return Number.isFinite(fraction) ? { fraction } : null
-  }
-
-  if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
-    const numeric = Number(trimmed)
-    if (Number.isInteger(numeric)) {
-      return numeric
-    }
-    return Number.isFinite(numeric) ? { fraction: Math.min(1, Math.max(0, numeric)) } : null
-  }
-
-  return trimmed
 }
 
 const resetReaderState = () => {
   currentProgress.value = 0
   currentLabel.value = '正在准备正文...'
   currentDetail.value = '阅读器'
+  tocItems.value = []
+  isTocOpen.value = false
 }
 
 const cleanupReader = () => {
+  clearPersistTimer()
+
   if (viewer.value) {
     viewer.value.removeEventListener('load', handleFoliateLoad as EventListener)
-    viewer.value.removeEventListener('relocate', handleRelocate as EventListener)
+    viewer.value.removeEventListener('relocate', handleRelocate)
 
     try {
       viewer.value.close()
@@ -214,6 +217,8 @@ const cleanupReader = () => {
   }
 
   openedBookSource.value = null
+  readerAdapter.value = null
+  tocItems.value = []
 
   if (viewerHost.value) {
     viewerHost.value.replaceChildren()
@@ -241,21 +246,77 @@ const handleFoliateLoad = () => {
   applyRendererPreferences()
 }
 
-const handleRelocate = (event: Event) => {
-  const detail = (event as CustomEvent<FoliateRelocateDetail>).detail
-  currentProgress.value = Math.min(1, Math.max(0, detail.fraction ?? 0))
-  currentLabel.value = detail.tocItem?.label || props.book.title
+const getInitialStoredLocation = () =>
+  loadCachedReadingLocation(props.book.id, props.book.format_type) ??
+  parseStoredReaderLocation(props.book.reading_location, props.book.format_type)
 
-  if (detail.pageItem?.label) {
-    currentDetail.value = `第 ${detail.pageItem.label} 页`
-  } else if (typeof detail.location?.current === 'number') {
-    currentDetail.value = `位置 ${detail.location.current}`
-  } else {
-    currentDetail.value = progressPercent.value
+const getCurrentPersistPayload = () => {
+  const snapshot = readerAdapter.value?.getCurrentLocation()
+  if (!snapshot?.location) {
+    return null
   }
 
-  rememberedLocation.value =
-    detail.cfi || (typeof detail.fraction === 'number' ? { fraction: detail.fraction } : rememberedLocation.value)
+  const readingLocation = serializeStoredReaderLocation(snapshot.location)
+  if (!readingLocation) {
+    return null
+  }
+
+  return {
+    reading_location: readingLocation,
+    progress: Number(snapshot.progress.toFixed(6)),
+    display_label: snapshot.detail,
+  }
+}
+
+const persistReadingLocation = async (options: { keepalive?: boolean } = {}) => {
+  const payload = getCurrentPersistPayload()
+  if (!payload) {
+    return
+  }
+
+  cacheReadingLocation(props.book.id, payload.reading_location)
+  if (payload.reading_location === lastPersistedLocation.value) {
+    return
+  }
+
+  try {
+    await updateBookReadingLocation(props.book.id, payload, {
+      keepalive: options.keepalive,
+    })
+    lastPersistedLocation.value = payload.reading_location
+  } catch (error) {
+    console.warn('保存阅读进度失败', error)
+  }
+}
+
+const scheduleReadingLocationPersist = () => {
+  clearPersistTimer()
+  persistTimer = window.setTimeout(() => {
+    persistTimer = null
+    void persistReadingLocation()
+  }, LOCATION_PERSIST_DEBOUNCE_MS)
+}
+
+const flushReadingLocationPersist = async (options: { keepalive?: boolean } = {}) => {
+  clearPersistTimer()
+  await persistReadingLocation(options)
+}
+
+const triggerExitPersistence = () => {
+  clearPersistTimer()
+  void persistReadingLocation({ keepalive: true })
+}
+
+const handleRelocate = (_event: Event) => {
+  const snapshot = readerAdapter.value?.getCurrentLocation()
+  if (!snapshot) {
+    return
+  }
+
+  currentProgress.value = snapshot.progress
+  currentLabel.value = snapshot.title
+  currentDetail.value = snapshot.detail
+  scheduleReadingLocationPersist()
 }
 
 const createReaderSource = async (): Promise<unknown> => {
@@ -288,6 +349,7 @@ const openReader = async () => {
   cleanupReader()
   resetReaderState()
   loadError.value = null
+  lastPersistedLocation.value = null
 
   if (!viewerHost.value || isBlockedByStatus.value) {
     return
@@ -306,7 +368,7 @@ const openReader = async () => {
     element.style.width = '100%'
     element.style.height = '100%'
     element.addEventListener('load', handleFoliateLoad as EventListener)
-    element.addEventListener('relocate', handleRelocate as EventListener)
+    element.addEventListener('relocate', handleRelocate)
 
     viewerHost.value.replaceChildren(element)
     viewer.value = element
@@ -323,14 +385,22 @@ const openReader = async () => {
     await element.open(source)
     applyRendererPreferences()
 
+    readerAdapter.value = createReaderAdapter(element, props.book.format_type, props.book.title)
+    tocItems.value = readerAdapter.value.getToc()
+
     if (element.isFixedLayout) {
       flowMode.value = 'paginated'
     }
 
-    await element.init({
-      lastLocation: rememberedLocation.value ?? parseStoredLocation(props.book.reading_location),
-      showTextStart: true,
-    })
+    const initialLocation = getInitialStoredLocation()
+    lastPersistedLocation.value = serializeStoredReaderLocation(initialLocation)
+
+    const restored = initialLocation ? await readerAdapter.value.restoreLocation(initialLocation) : false
+    if (!restored) {
+      await element.init({
+        showTextStart: true,
+      })
+    }
   } catch (error) {
     cleanupReader()
 
@@ -362,6 +432,34 @@ const goNext = async () => {
   await viewer.value.goRight()
 }
 
+const handleTocSelect = async (item: TocItem) => {
+  if (!readerAdapter.value || item.disabled) {
+    return
+  }
+
+  try {
+    await readerAdapter.value.goToTocItem(item)
+    isTocOpen.value = false
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '目录跳转失败'
+    toast.error(message)
+  }
+}
+
+const handleBack = async () => {
+  if (isLeaving.value) {
+    return
+  }
+
+  isLeaving.value = true
+  try {
+    await flushReadingLocationPersist()
+  } finally {
+    isLeaving.value = false
+    emit('back')
+  }
+}
+
 const handleRetry = () => {
   void openReader()
 }
@@ -384,8 +482,27 @@ const handleKeydown = (event: KeyboardEvent) => {
   }
 
   if (event.key.toLowerCase() === 'escape') {
-    emit('back')
+    event.preventDefault()
+    void handleBack()
   }
+}
+
+const handleVisibilityChange = () => {
+  if (document.visibilityState === 'hidden') {
+    triggerExitPersistence()
+  }
+}
+
+const handleWindowBlur = () => {
+  triggerExitPersistence()
+}
+
+const handlePageHide = () => {
+  triggerExitPersistence()
+}
+
+const handleBeforeUnload = () => {
+  triggerExitPersistence()
 }
 
 watch(flowMode, value => {
@@ -396,20 +513,27 @@ watch(flowMode, value => {
 watch(
   () => `${props.book.id}:${props.book.status}:${props.book.file_path}`,
   () => {
-    rememberedLocation.value = parseStoredLocation(props.book.reading_location)
     flowMode.value = 'paginated'
     void openReader()
   },
 )
 
 onMounted(() => {
-  rememberedLocation.value = parseStoredLocation(props.book.reading_location)
   window.addEventListener('keydown', handleKeydown)
+  window.addEventListener('blur', handleWindowBlur)
+  window.addEventListener('pagehide', handlePageHide)
+  window.addEventListener('beforeunload', handleBeforeUnload)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
   void openReader()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener('blur', handleWindowBlur)
+  window.removeEventListener('pagehide', handlePageHide)
+  window.removeEventListener('beforeunload', handleBeforeUnload)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+  triggerExitPersistence()
   openVersion += 1
   cleanupReader()
 })
@@ -419,7 +543,7 @@ onBeforeUnmount(() => {
   <div class="book-reader-page">
     <header class="reader-header">
       <div class="reader-header-main">
-        <button class="header-btn" type="button" @click="emit('back')">
+        <button class="header-btn" type="button" :disabled="isLeaving" @click="handleBack">
           <ArrowLeft :size="16" />
           <span>返回图书馆</span>
         </button>
@@ -432,6 +556,16 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="reader-header-actions">
+        <button
+          class="header-btn secondary"
+          type="button"
+          :disabled="isLoading || !showReaderChrome || isLeaving"
+          @click="isTocOpen = true"
+        >
+          <ListTree :size="14" />
+          <span>目录</span>
+        </button>
+
         <div v-if="showModeToggle" class="mode-switch" aria-label="阅读模式切换">
           <button
             type="button"
@@ -453,7 +587,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <button class="header-btn secondary" type="button" :disabled="isLoading" @click="handleRetry">
+        <button class="header-btn secondary" type="button" :disabled="isLoading || isLeaving" @click="handleRetry">
           <RefreshCw :size="14" :class="{ spinning: isLoading }" />
           <span>{{ isLoading ? '打开中...' : '重新打开' }}</span>
         </button>
@@ -487,7 +621,7 @@ onBeforeUnmount(() => {
           v-if="showReaderChrome"
           type="button"
           class="nav-hotspot nav-prev"
-          :disabled="isLoading"
+          :disabled="isLoading || isLeaving"
           aria-label="上一页"
           @click="goPrev"
         >
@@ -498,7 +632,7 @@ onBeforeUnmount(() => {
           v-if="showReaderChrome"
           type="button"
           class="nav-hotspot nav-next"
-          :disabled="isLoading"
+          :disabled="isLoading || isLeaving"
           aria-label="下一页"
           @click="goNext"
         >
@@ -516,7 +650,7 @@ onBeforeUnmount(() => {
           <h2>{{ readerState.title }}</h2>
           <p>{{ readerState.detail }}</p>
           <div class="overlay-actions">
-            <button class="overlay-btn secondary" type="button" @click="emit('back')">返回图书馆</button>
+            <button class="overlay-btn secondary" type="button" @click="handleBack">返回图书馆</button>
           </div>
         </div>
 
@@ -525,7 +659,7 @@ onBeforeUnmount(() => {
           <h2>阅读器打开失败</h2>
           <p>{{ loadError }}</p>
           <div class="overlay-actions">
-            <button class="overlay-btn secondary" type="button" @click="emit('back')">返回图书馆</button>
+            <button class="overlay-btn secondary" type="button" @click="handleBack">返回图书馆</button>
             <button class="overlay-btn primary" type="button" @click="handleRetry">重试打开</button>
           </div>
         </div>
@@ -539,17 +673,25 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="footer-actions">
-        <button class="footer-btn" type="button" :disabled="isLoading || !showReaderChrome" @click="goPrev">
+        <button class="footer-btn" type="button" :disabled="isLoading || !showReaderChrome || isLeaving" @click="goPrev">
           <ChevronLeft :size="16" />
           <span>上一页</span>
         </button>
         <div class="progress-pill">{{ progressPercent }}</div>
-        <button class="footer-btn" type="button" :disabled="isLoading || !showReaderChrome" @click="goNext">
+        <button class="footer-btn" type="button" :disabled="isLoading || !showReaderChrome || isLeaving" @click="goNext">
           <span>下一页</span>
           <ChevronRight :size="16" />
         </button>
       </div>
     </footer>
+
+    <ReaderTocPanel
+      :open="isTocOpen"
+      :items="tocItems"
+      :active-label="currentLabel"
+      @update:open="isTocOpen = $event"
+      @select="handleTocSelect"
+    />
   </div>
 </template>
 
@@ -613,6 +755,8 @@ onBeforeUnmount(() => {
 .reader-header-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 10px;
 }
 

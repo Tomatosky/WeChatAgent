@@ -30,6 +30,12 @@ export interface BookUpdatePayload {
   ai_friend_id?: number | null
 }
 
+export interface BookReadingLocationPayload {
+  reading_location: string | null
+  progress?: number
+  display_label?: string | null
+}
+
 async function parseError(response: Response, fallback: string): Promise<string> {
   try {
     const data = await response.json()
@@ -81,6 +87,29 @@ export async function updateBook(bookId: number, payload: BookUpdatePayload): Pr
 
   if (!response.ok) {
     throw new Error(await parseError(response, '更新图书失败'))
+  }
+
+  return response.json()
+}
+
+export async function updateBookReadingLocation(
+  bookId: number,
+  payload: BookReadingLocationPayload,
+  options: {
+    keepalive?: boolean
+  } = {},
+): Promise<Book> {
+  const response = await fetch(withApiBase(`/api/books/${bookId}/reading-location`), {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+    keepalive: options.keepalive === true,
+  })
+
+  if (!response.ok) {
+    throw new Error(await parseError(response, '更新阅读进度失败'))
   }
 
   return response.json()

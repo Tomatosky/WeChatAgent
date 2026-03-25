@@ -17,7 +17,7 @@ from app.core.config import settings
 from app.models.book import Book as BookModel
 from app.models.chat import ChatSession, Message
 from app.models.friend import Friend
-from app.schemas.book import BookUpdate
+from app.schemas.book import BookReadingLocationUpdate, BookUpdate
 
 
 SUPPORTED_BOOK_EXTENSIONS = {
@@ -178,6 +178,35 @@ def update_book(db: Session, book_id: int, book_in: BookUpdate) -> Optional[Book
     except Exception as exc:
         db.rollback()
         raise BookImportError(f"更新图书信息失败：{exc}", status_code=500) from exc
+
+    _enrich_book(db, db_book)
+    return db_book
+
+
+def update_book_reading_location(
+    db: Session,
+    book_id: int,
+    location_in: BookReadingLocationUpdate,
+) -> Optional[BookModel]:
+    db_book = (
+        db.query(BookModel)
+        .filter(BookModel.id == book_id, BookModel.deleted == False)
+        .first()
+    )
+    if not db_book:
+        return None
+
+    update_data = location_in.model_dump(exclude_unset=True)
+    if "reading_location" in update_data:
+        db_book.reading_location = update_data["reading_location"]
+
+    try:
+        db.add(db_book)
+        db.commit()
+        db.refresh(db_book)
+    except Exception as exc:
+        db.rollback()
+        raise BookImportError(f"更新阅读进度失败：{exc}", status_code=500) from exc
 
     _enrich_book(db, db_book)
     return db_book

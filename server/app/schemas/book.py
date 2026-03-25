@@ -20,6 +20,26 @@ class BookUpdate(BaseModel):
         return value
 
 
+class BookReadingLocationUpdate(BaseModel):
+    reading_location: Optional[str] = Field(None, max_length=255, description="阅读定位值")
+    progress: Optional[float] = Field(None, ge=0, le=1, description="阅读进度百分比（0-1），当前仅保留接口兼容")
+    display_label: Optional[str] = Field(
+        None,
+        max_length=128,
+        description="阅读进度展示文案，当前仅保留接口兼容",
+    )
+
+    @field_validator("reading_location", "display_label", mode="before")
+    @classmethod
+    def normalize_optional_text_fields(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
+
+
 class Book(BaseModel):
     id: int
     title: str = Field(..., description="展示书名")

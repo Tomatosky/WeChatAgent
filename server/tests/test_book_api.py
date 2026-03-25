@@ -213,6 +213,42 @@ def test_update_book_binding_and_invalid_author_state(client: TestClient, db: Se
         settings.DATA_DIR = original_data_dir
 
 
+def test_update_book_reading_location_uses_dedicated_endpoint(
+    client: TestClient,
+    db: Session,
+    tmp_path: Path,
+):
+    original_data_dir = settings.DATA_DIR
+    settings.DATA_DIR = str(tmp_path)
+    try:
+        import_response = client.post(
+            f"{settings.API_STR}/books/import",
+            files={"file": ("阅读进度测试.txt", "测试正文".encode("utf-8"), "text/plain")},
+        )
+        assert import_response.status_code == 200
+        book_id = import_response.json()["id"]
+
+        reading_location = '{"v":1,"f":"txt","s":2,"fr":0.42}'
+        patch_response = client.patch(
+            f"{settings.API_STR}/books/{book_id}/reading-location",
+            json={
+                "reading_location": reading_location,
+                "progress": 0.42,
+                "display_label": "第 3 节",
+            },
+        )
+        assert patch_response.status_code == 200
+        payload = patch_response.json()
+        assert payload["reading_location"] == reading_location
+
+        db.expire_all()
+        stored_book = db.query(BookModel).filter(BookModel.id == book_id).first()
+        assert stored_book is not None
+        assert stored_book.reading_location == reading_location
+    finally:
+        settings.DATA_DIR = original_data_dir
+
+
 def test_delete_book_cascades_sessions_and_files(client: TestClient, db: Session, tmp_path: Path):
     original_data_dir = settings.DATA_DIR
     settings.DATA_DIR = str(tmp_path)

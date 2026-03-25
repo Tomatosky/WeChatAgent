@@ -47,6 +47,22 @@ def update_book(
     return book
 
 
+@router.patch("/{book_id}/reading-location", response_model=book_schemas.Book)
+def update_book_reading_location(
+    *,
+    db: Session = Depends(deps.get_db),
+    book_id: int,
+    location_in: book_schemas.BookReadingLocationUpdate,
+):
+    try:
+        book = book_service.update_book_reading_location(db, book_id, location_in)
+    except book_service.BookImportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    if not book:
+        raise HTTPException(status_code=404, detail="图书不存在")
+    return book
+
+
 @router.post("/{book_id}/cover", response_model=book_schemas.Book)
 def update_book_cover(
     *,
