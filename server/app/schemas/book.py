@@ -1,7 +1,23 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class BookUpdate(BaseModel):
+    title: Optional[str] = Field(None, max_length=255, description="展示书名")
+    author: Optional[str] = Field(None, max_length=128, description="原作者")
+    ai_friend_id: Optional[int] = Field(None, description="绑定好友 ID，传 null 表示解绑")
+
+    @field_validator("title", "author", mode="before")
+    @classmethod
+    def normalize_text_fields(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
 
 
 class Book(BaseModel):
@@ -20,5 +36,9 @@ class Book(BaseModel):
     deleted: bool
     file_size: Optional[int] = Field(None, description="文件大小（字节）")
     format_type: str = Field(..., description="格式类型")
+    bound_friend_name: Optional[str] = Field(None, description="已绑定好友名称")
+    bound_friend_avatar: Optional[str] = Field(None, description="已绑定好友头像")
+    author_binding_status: str = Field(..., description="作者绑定状态：unbound/valid/invalid")
+    author_binding_message: str = Field(..., description="作者绑定状态说明")
 
     model_config = ConfigDict(from_attributes=True)

@@ -1,14 +1,23 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import {
   BookOpen,
   FilePlus2,
   LoaderCircle,
   RefreshCw,
+  Trash2,
+  UserRound,
 } from 'lucide-vue-next'
 
 import { getStaticUrl } from '@/api/base'
-import { getBooks, importBook, type Book } from '@/api/book'
+import {
+  deleteBook,
+  getBooks,
+  importBook,
+  updateBook,
+  type Book,
+} from '@/api/book'
+import { getFriends, type Friend } from '@/api/friend'
 import { useToast } from '@/composables/useToast'
 
 const emit = defineEmits<{
@@ -19,14 +28,23 @@ const toast = useToast()
 const isElectron = Boolean(window.WeAgentChat?.windowControls)
 const fileInput = ref<HTMLInputElement | null>(null)
 const books = ref<Book[]>([])
+const friends = ref<Friend[]>([])
 const isLoading = ref(false)
 const isImporting = ref(false)
+const editingBookId = ref<number | null>(null)
+const savingBookId = ref<number | null>(null)
+const deletingBookId = ref<number | null>(null)
+
+const editForm = reactive({
+  aiFriendId: '',
+})
 
 const MAX_BOOK_FILE_SIZE = 200 * 1024 * 1024
 const accept = '.epub,.pdf,.mobi,.azw,.azw3,.txt'
 const allowedExtensions = new Set(['.epub', '.pdf', '.mobi', '.azw', '.azw3', '.txt'])
 
 const totalBooks = computed(() => books.value.length)
+const bindableFriends = computed(() => friends.value.filter(friend => !friend.deleted))
 
 const handleToggleMaximize = () => {
   if (!isElectron) return
@@ -53,9 +71,24 @@ const getStatusLabel = (status: string) => {
     case 'limited':
       return '受限可用'
     case 'failed':
-      return '导入失败'
+      return '解析失败'
     default:
       return status
+  }
+}
+
+const getStatusTone = (status: string) => {
+  switch (status) {
+    case 'ready':
+      return 'tone-ready'
+    case 'limited':
+      return 'tone-limited'
+    case 'failed':
+      return 'tone-failed'
+    case 'processing':
+      return 'tone-processing'
+    default:
+      return 'tone-imported'
   }
 }
 
@@ -68,6 +101,20 @@ const getFileExtension = (fileName: string) => {
   return ext.toLowerCase()
 }
 
+const getBindingLabel = (book: Book) => {
+  if (book.author_binding_status === 'valid') {
+    return book.bound_friend_name || '已绑定作者'
+  }
+  if (book.author_binding_status === 'invalid') {
+    return '作者失效'
+  }
+  return '未绑定作者'
+}
+
+const replaceBookInList = (nextBook: Book) => {
+  books.value = books.value.map(book => (book.id === nextBook.id ? nextBook : book))
+}
+
 const loadBooks = async () => {
   isLoading.value = true
   try {
@@ -78,6 +125,19 @@ const loadBooks = async () => {
   } finally {
     isLoading.value = false
   }
+}
+
+const loadFriends = async () => {
+  try {
+    friends.value = await getFriends(0, 300)
+  } catch (error) {
+    console.error('加载好友列表失败', error)
+    toast.error('加载作者列表失败')
+  }
+}
+
+const loadInitialData = async () => {
+  await Promise.all([loadBooks(), loadFriends()])
 }
 
 const openImportPicker = () => {
@@ -115,8 +175,57 @@ const handleFileChange = async (event: Event) => {
   }
 }
 
+const startEditing = (book: Book) => {
+  editingBookId.value = book.id
+  editForm.aiFriendId = book.ai_friend_id == null ? '' : String(book.ai_friend_id)
+}
+
+const cancelEditing = () => {
+  editingBookId.value = null
+  editForm.aiFriendId = ''
+}
+
+const handleSaveBook = async () => {
+  if (editingBookId.value == null) return
+
+  savingBookId.value = editingBookId.value
+  try {
+    const updated = await updateBook(editingBookId.value, {
+      ai_friend_id: editForm.aiFriendId ? Number(editForm.aiFriendId) : null,
+    })
+    replaceBookInList(updated)
+    cancelEditing()
+    toast.success(`《${updated.title}》作者绑定已更新`)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '更新图书失败'
+    toast.error(message)
+  } finally {
+    savingBookId.value = null
+  }
+}
+
+const handleDeleteBook = async (book: Book) => {
+  const confirmed = window.confirm(`确认删除《${book.title}》吗？相关封面、阅读进度与伴读会话会一并清理。`)
+  if (!confirmed) return
+
+  deletingBookId.value = book.id
+  try {
+    await deleteBook(book.id)
+    books.value = books.value.filter(item => item.id !== book.id)
+    if (editingBookId.value === book.id) {
+      cancelEditing()
+    }
+    toast.success(`《${book.title}》已删除`)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '删除图书失败'
+    toast.error(message)
+  } finally {
+    deletingBookId.value = null
+  }
+}
+
 onMounted(() => {
-  void loadBooks()
+  void loadInitialData()
 })
 </script>
 
@@ -131,7 +240,7 @@ onMounted(() => {
             <span>与作者共读</span>
           </div>
           <div class="header-actions">
-            <button class="ghost-action" :disabled="isLoading || isImporting" @click="loadBooks">
+            <button class="ghost-action" :disabled="isLoading || isImporting" @click="loadInitialData">
               <RefreshCw :size="14" :class="{ spinning: isLoading }" />
               刷新列表
             </button>
@@ -166,14 +275,8 @@ onMounted(() => {
         </div>
 
         <div v-else-if="!books.length" class="empty-shelf">
-          <div class="shelf-illustration" aria-hidden="true">
-            <span class="book-spine spine-green"></span>
-            <span class="book-spine spine-dark"></span>
-            <span class="book-spine spine-light"></span>
-            <span class="book-spine spine-soft"></span>
-          </div>
           <h2>图书馆里还没有书</h2>
-          <p>先导入一本 EPUB、PDF、MOBI、AZW/AZW3 或 TXT 文件。导入后系统会把文件复制到默认图书馆文件夹，并尽量提取基础信息。</p>
+          <p>导入一本书后，就可以绑定 AI 作者。</p>
           <button class="empty-import-action" :disabled="isImporting" @click="openImportPicker">
             <LoaderCircle v-if="isImporting" :size="16" class="spinning" />
             <FilePlus2 v-else :size="16" />
@@ -194,12 +297,53 @@ onMounted(() => {
                 <span class="cover-format">{{ getFormatLabel(book.format_type) }}</span>
                 <span class="cover-title">{{ book.title }}</span>
               </div>
-              <span class="status-pill" :class="`status-${book.status}`">{{ getStatusLabel(book.status) }}</span>
+              <span class="status-pill" :class="getStatusTone(book.status)">{{ getStatusLabel(book.status) }}</span>
             </div>
 
             <div class="book-meta">
               <h3>{{ book.title }}</h3>
-              <p class="book-author">{{ book.author || '作者待识别' }}</p>
+              <p class="book-author">{{ book.author || '原作者待补充' }}</p>
+
+              <button
+                type="button"
+                class="binding-banner"
+                :class="{
+                  'binding-valid': book.author_binding_status === 'valid',
+                  'binding-invalid': book.author_binding_status === 'invalid',
+                  'binding-empty': book.author_binding_status === 'unbound',
+                }"
+                @click="startEditing(book)">
+                <UserRound :size="14" />
+                <span>{{ getBindingLabel(book) }}</span>
+              </button>
+            </div>
+
+            <div v-if="editingBookId === book.id" class="edit-panel">
+              <label class="field">
+                <span>绑定 AI 作者</span>
+                <select v-model="editForm.aiFriendId">
+                  <option value="">暂不绑定</option>
+                  <option v-for="friend in bindableFriends" :key="friend.id" :value="String(friend.id)">
+                    {{ friend.name }}
+                  </option>
+                </select>
+              </label>
+
+              <div class="edit-actions">
+                <button
+                  class="danger-text-btn"
+                  :disabled="deletingBookId === book.id"
+                  @click="handleDeleteBook(book)">
+                  <LoaderCircle v-if="deletingBookId === book.id" :size="14" class="spinning" />
+                  <Trash2 v-else :size="14" />
+                  删除图书
+                </button>
+                <button class="ghost-action inline-ghost" @click="cancelEditing">取消</button>
+                <button class="primary-action inline-primary" :disabled="savingBookId === book.id" @click="handleSaveBook">
+                  <LoaderCircle v-if="savingBookId === book.id" :size="14" class="spinning" />
+                  <span>{{ savingBookId === book.id ? '保存中...' : '保存修改' }}</span>
+                </button>
+              </div>
             </div>
           </article>
         </div>
@@ -270,7 +414,9 @@ onMounted(() => {
 .back-btn,
 .ghost-action,
 .primary-action,
-.empty-import-action {
+.empty-import-action,
+.field input,
+.field select {
   -webkit-app-region: no-drag;
 }
 
@@ -326,7 +472,8 @@ onMounted(() => {
 }
 
 .primary-action,
-.empty-import-action {
+.empty-import-action,
+.inline-primary {
   background: linear-gradient(135deg, #07c160 0%, #10a04e 100%);
   color: #fff;
 }
@@ -345,7 +492,8 @@ onMounted(() => {
 
 .ghost-action:disabled,
 .primary-action:disabled,
-.empty-import-action:disabled {
+.empty-import-action:disabled,
+.danger-text-btn:disabled {
   opacity: 0.7;
   cursor: not-allowed;
 }
@@ -355,28 +503,16 @@ onMounted(() => {
 }
 
 .workspace-grid {
-  padding-left: 24px;
-  padding-right: 24px;
-}
-
-.shelf-panel {
-  border: 1px solid rgba(217, 224, 217, 0.96);
-  background: rgba(255, 255, 255, 0.8);
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.05);
-  backdrop-filter: blur(16px);
-}
-
-.workspace-grid {
-  padding-top: 18px;
-  padding-bottom: 18px;
-}
-
-.shelf-panel {
-  border-radius: 28px;
+  padding: 18px 24px;
 }
 
 .shelf-panel {
   padding: 24px;
+  border-radius: 28px;
+  border: 1px solid rgba(217, 224, 217, 0.96);
+  background: rgba(255, 255, 255, 0.8);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.05);
+  backdrop-filter: blur(16px);
 }
 
 .panel-header {
@@ -392,14 +528,6 @@ onMounted(() => {
   font-weight: 600;
 }
 
-.panel-subtitle {
-  margin-top: 8px;
-  color: #6b7280;
-  font-size: 13px;
-  line-height: 1.7;
-  max-width: 62ch;
-}
-
 .panel-badge {
   flex-shrink: 0;
   padding: 6px 10px;
@@ -413,11 +541,10 @@ onMounted(() => {
 .loading-shelf,
 .empty-shelf {
   margin-top: 22px;
-  min-height: 360px;
+  min-height: 280px;
   border-radius: 24px;
   border: 1px dashed rgba(189, 199, 189, 0.95);
-  background:
-    linear-gradient(180deg, rgba(248, 250, 248, 0.9) 0%, rgba(240, 244, 240, 0.95) 100%);
+  background: linear-gradient(180deg, rgba(248, 250, 248, 0.9) 0%, rgba(240, 244, 240, 0.95) 100%);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -432,55 +559,18 @@ onMounted(() => {
   font-size: 14px;
 }
 
-.shelf-illustration {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  height: 92px;
-  padding: 0 18px 18px;
-  border-bottom: 3px solid rgba(157, 176, 157, 0.85);
-}
-
-.book-spine {
-  display: inline-flex;
-  width: 28px;
-  border-radius: 8px 8px 2px 2px;
-  box-shadow: 0 12px 22px rgba(15, 23, 42, 0.1);
-}
-
-.spine-green {
-  height: 74px;
-  background: linear-gradient(180deg, #22c55e 0%, #14924a 100%);
-}
-
-.spine-dark {
-  height: 58px;
-  background: linear-gradient(180deg, #475569 0%, #293241 100%);
-}
-
-.spine-light {
-  height: 68px;
-  background: linear-gradient(180deg, #d9f99d 0%, #84cc16 100%);
-}
-
-.spine-soft {
-  height: 50px;
-  background: linear-gradient(180deg, #e5e7eb 0%, #cbd5e1 100%);
-}
-
 .empty-shelf h2 {
-  margin-top: 28px;
   color: #1f2937;
-  font-size: 24px;
-  font-weight: 700;
+  font-size: 20px;
+  font-weight: 600;
 }
 
 .empty-shelf p {
   margin-top: 12px;
-  max-width: 58ch;
+  max-width: 34ch;
   color: #6b7280;
-  font-size: 14px;
-  line-height: 1.8;
+  font-size: 13px;
+  line-height: 1.7;
 }
 
 .empty-import-action {
@@ -490,20 +580,20 @@ onMounted(() => {
 
 .book-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
   margin-top: 22px;
 }
 
 .book-card {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 16px;
-  border-radius: 22px;
-  background: linear-gradient(180deg, rgba(248, 250, 248, 0.98) 0%, rgba(241, 245, 241, 0.98) 100%);
-  border: 1px solid rgba(221, 228, 221, 0.98);
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.05);
+  gap: 12px;
+  padding: 14px;
+  border-radius: 18px;
+  background: #fff;
+  border: 1px solid rgba(229, 231, 235, 0.95);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.04);
 }
 
 .book-cover-shell {
@@ -539,10 +629,13 @@ onMounted(() => {
   align-self: flex-start;
   padding: 4px 8px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.16);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
+}
+
+.cover-format {
+  background: rgba(255, 255, 255, 0.16);
 }
 
 .cover-title {
@@ -562,22 +655,29 @@ onMounted(() => {
   padding: 6px 10px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.92);
-  color: #1f2937;
   font-size: 11px;
   font-weight: 700;
   box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
 }
 
-.status-imported {
+.tone-imported {
   color: #03874d;
 }
 
-.status-failed {
-  color: #b91c1c;
+.tone-processing {
+  color: #1d4ed8;
 }
 
-.status-limited {
+.tone-ready {
+  color: #166534;
+}
+
+.tone-limited {
   color: #b45309;
+}
+
+.tone-failed {
+  color: #b91c1c;
 }
 
 .book-meta h3 {
@@ -587,12 +687,108 @@ onMounted(() => {
   line-height: 1.5;
 }
 
-.book-author,
-.book-status-detail {
-  margin-top: 6px;
+.book-author {
+  margin-top: 4px;
   color: #6b7280;
   font-size: 12px;
   line-height: 1.7;
+}
+
+.binding-banner {
+  margin-top: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition: transform 0.18s ease, opacity 0.18s ease;
+}
+
+.binding-banner:hover {
+  transform: translateY(-1px);
+}
+
+.binding-valid {
+  color: #166534;
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.binding-invalid {
+  color: #b91c1c;
+  background: rgba(248, 113, 113, 0.14);
+}
+
+.binding-empty {
+  color: #5f6b63;
+  background: rgba(226, 232, 240, 0.65);
+}
+
+.edit-panel {
+  padding: 14px;
+  border-radius: 14px;
+  background: #f8faf8;
+  border: 1px solid rgba(229, 231, 235, 0.95);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field span {
+  color: #4b5563;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.field input,
+.field select {
+  width: 100%;
+  height: 40px;
+  border-radius: 12px;
+  border: 1px solid rgba(204, 214, 204, 0.95);
+  background: rgba(255, 255, 255, 0.95);
+  color: #1f2937;
+  font-size: 13px;
+  padding: 0 12px;
+  outline: none;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.field input:focus,
+.field select:focus {
+  border-color: rgba(7, 193, 96, 0.68);
+  box-shadow: 0 0 0 3px rgba(7, 193, 96, 0.12);
+}
+
+.edit-actions {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.danger-text-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  color: #dc2626;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.inline-ghost,
+.inline-primary {
+  min-width: 96px;
 }
 
 .spinning {
@@ -652,11 +848,16 @@ onMounted(() => {
   }
 
   .empty-shelf h2 {
-    font-size: 21px;
+    font-size: 18px;
   }
 
   .book-grid {
     grid-template-columns: 1fr;
+  }
+
+  .edit-actions {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
 </style>

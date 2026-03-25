@@ -16,6 +16,16 @@ export interface Book {
   deleted: boolean
   file_size?: number | null
   format_type: string
+  bound_friend_name?: string | null
+  bound_friend_avatar?: string | null
+  author_binding_status: 'unbound' | 'valid' | 'invalid'
+  author_binding_message: string
+}
+
+export interface BookUpdatePayload {
+  title?: string | null
+  author?: string | null
+  ai_friend_id?: number | null
 }
 
 async function parseError(response: Response, fallback: string): Promise<string> {
@@ -56,4 +66,46 @@ export async function importBook(file: File): Promise<Book> {
   }
 
   return response.json()
+}
+
+export async function updateBook(bookId: number, payload: BookUpdatePayload): Promise<Book> {
+  const response = await fetch(withApiBase(`/api/books/${bookId}`), {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+
+  if (!response.ok) {
+    throw new Error(await parseError(response, '更新图书失败'))
+  }
+
+  return response.json()
+}
+
+export async function updateBookCover(bookId: number, file: File): Promise<Book> {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await fetch(withApiBase(`/api/books/${bookId}/cover`), {
+    method: 'POST',
+    body: formData,
+  })
+
+  if (!response.ok) {
+    throw new Error(await parseError(response, '更新封面失败'))
+  }
+
+  return response.json()
+}
+
+export async function deleteBook(bookId: number): Promise<void> {
+  const response = await fetch(withApiBase(`/api/books/${bookId}`), {
+    method: 'DELETE',
+  })
+
+  if (!response.ok) {
+    throw new Error(await parseError(response, '删除图书失败'))
+  }
 }

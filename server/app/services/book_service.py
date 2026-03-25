@@ -15,6 +15,9 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.book import Book as BookModel
+from app.models.chat import ChatSession, Message
+from app.models.friend import Friend
+from app.schemas.book import BookUpdate
 
 
 SUPPORTED_BOOK_EXTENSIONS = {
@@ -26,6 +29,7 @@ SUPPORTED_BOOK_EXTENSIONS = {
     ".txt": "txt",
 }
 MAX_BOOK_FILE_SIZE = 200 * 1024 * 1024
+MAX_COVER_FILE_SIZE = 10 * 1024 * 1024
 
 
 class BookImportError(Exception):
@@ -52,8 +56,19 @@ def get_books(db: Session, skip: int = 0, limit: int = 100) -> list[BookModel]:
         .all()
     )
     for book in books:
-        _enrich_book(book)
+        _enrich_book(db, book)
     return books
+
+
+def get_book(db: Session, book_id: int) -> Optional[BookModel]:
+    book = (
+        db.query(BookModel)
+        .filter(BookModel.id == book_id, BookModel.deleted == False)
+        .first()
+    )
+    if book:
+        _enrich_book(db, book)
+    return book
 
 
 def import_book(db: Session, upload_file: UploadFile) -> BookModel:
@@ -129,8 +144,135 @@ def import_book(db: Session, upload_file: UploadFile) -> BookModel:
             _resolve_library_path(relative_cover_path).unlink(missing_ok=True)
         raise BookImportError("写入图书记录失败。", status_code=500)
 
-    _enrich_book(db_book)
+    _enrich_book(db, db_book)
     return db_book
+
+
+def update_book(db: Session, book_id: int, book_in: BookUpdate) -> Optional[BookModel]:
+    db_book = (
+        db.query(BookModel)
+        .filter(BookModel.id == book_id, BookModel.deleted == False)
+        .first()
+    )
+    if not db_book:
+        return None
+
+    update_data = book_in.model_dump(exclude_unset=True)
+
+    if "title" in update_data:
+        title = update_data["title"]
+        if not title:
+            raise BookImportError("书名不能为空。")
+        db_book.title = title
+
+    if "author" in update_data:
+        db_book.author = update_data["author"]
+
+    if "ai_friend_id" in update_data:
+        db_book.ai_friend_id = _validate_bindable_friend_id(db, update_data["ai_friend_id"])
+
+    try:
+        db.add(db_book)
+        db.commit()
+        db.refresh(db_book)
+    except Exception as exc:
+        db.rollback()
+        raise BookImportError(f"更新图书信息失败：{exc}", status_code=500) from exc
+
+    _enrich_book(db, db_book)
+    return db_book
+
+
+def update_book_cover(db: Session, book_id: int, upload_file: UploadFile) -> Optional[BookModel]:
+    db_book = (
+        db.query(BookModel)
+        .filter(BookModel.id == book_id, BookModel.deleted == False)
+        .first()
+    )
+    if not db_book:
+        return None
+
+    if not upload_file.filename:
+        raise BookImportError("封面文件名缺失。")
+
+    cover_bytes = upload_file.file.read()
+    upload_file.file.close()
+    if not cover_bytes:
+        raise BookImportError("封面文件为空。")
+    if len(cover_bytes) > MAX_COVER_FILE_SIZE:
+        raise BookImportError("封面文件过大，当前仅支持 10MB 以内的图片。")
+
+    _ensure_library_dirs()
+    relative_cover_path = _persist_cover(cover_bytes)
+    if not relative_cover_path:
+        raise BookImportError("封面图片无法识别，请选择 PNG、JPG、WEBP 等常见图片格式。")
+
+    previous_cover = db_book.cover_url
+    db_book.cover_url = relative_cover_path
+
+    try:
+        db.add(db_book)
+        db.commit()
+        db.refresh(db_book)
+    except Exception as exc:
+        db.rollback()
+        _delete_library_asset(relative_cover_path)
+        raise BookImportError(f"更新封面失败：{exc}", status_code=500) from exc
+
+    if previous_cover and previous_cover != relative_cover_path:
+        _delete_library_asset(previous_cover)
+
+    _enrich_book(db, db_book)
+    return db_book
+
+
+def delete_book(db: Session, book_id: int) -> bool:
+    db_book = (
+        db.query(BookModel)
+        .filter(BookModel.id == book_id, BookModel.deleted == False)
+        .first()
+    )
+    if not db_book:
+        return False
+
+    file_path = db_book.file_path
+    cover_url = db_book.cover_url
+
+    sessions = (
+        db.query(ChatSession)
+        .filter(
+            ChatSession.session_type == "book_reading",
+            ChatSession.knowledge_id == db_book.id,
+            ChatSession.deleted == False,
+        )
+        .all()
+    )
+
+    session_ids = [session.id for session in sessions]
+    if session_ids:
+        (
+            db.query(Message)
+            .filter(Message.session_id.in_(session_ids), Message.deleted == False)
+            .update({Message.deleted: True}, synchronize_session=False)
+        )
+        for session in sessions:
+            session.deleted = True
+            db.add(session)
+
+    db_book.deleted = True
+    db_book.cover_url = None
+    db_book.ai_friend_id = None
+    db.add(db_book)
+
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise BookImportError(f"删除图书失败：{exc}", status_code=500) from exc
+
+    _delete_library_asset(file_path)
+    _delete_library_asset(cover_url)
+    return True
 
 
 def _ensure_library_dirs() -> None:
@@ -157,10 +299,24 @@ def _resolve_library_path(relative_path: str) -> Path:
     return _library_root_dir() / Path(normalized.removeprefix("library/"))
 
 
-def _enrich_book(book: BookModel) -> None:
+def _delete_library_asset(relative_path: Optional[str]) -> None:
+    if not relative_path:
+        return
+    path = _resolve_optional_library_path(relative_path)
+    if not path:
+        return
+    path.unlink(missing_ok=True)
+
+
+def _enrich_book(db: Session, book: BookModel) -> None:
     file_path = _resolve_optional_library_path(book.file_path)
     book.file_size = file_path.stat().st_size if file_path and file_path.exists() else None
     book.format_type = _detect_format(book.file_name, book.file_path)
+    binding = _resolve_author_binding(db, book.ai_friend_id)
+    book.bound_friend_name = binding["name"]
+    book.bound_friend_avatar = binding["avatar"]
+    book.author_binding_status = binding["status"]
+    book.author_binding_message = binding["message"]
 
 
 def _resolve_optional_library_path(relative_path: Optional[str]) -> Optional[Path]:
@@ -179,6 +335,41 @@ def _detect_format(file_name: Optional[str], file_path: Optional[str]) -> str:
     if not ext and file_path:
         ext = Path(file_path).suffix.lower()
     return SUPPORTED_BOOK_EXTENSIONS.get(ext, ext.lstrip(".") or "unknown")
+
+
+def _resolve_author_binding(db: Session, ai_friend_id: Optional[int]) -> dict[str, Optional[str]]:
+    if not ai_friend_id:
+        return {
+            "name": None,
+            "avatar": None,
+            "status": "unbound",
+            "message": "未绑定作者",
+        }
+
+    friend = db.query(Friend).filter(Friend.id == ai_friend_id).first()
+    if not friend or friend.deleted:
+        return {
+            "name": None,
+            "avatar": None,
+            "status": "invalid",
+            "message": "作者失效，需重新绑定",
+        }
+
+    return {
+        "name": friend.name,
+        "avatar": friend.avatar,
+        "status": "valid",
+        "message": f"已绑定作者：{friend.name}",
+    }
+
+
+def _validate_bindable_friend_id(db: Session, friend_id: Optional[int]) -> Optional[int]:
+    if friend_id is None:
+        return None
+    friend = db.query(Friend).filter(Friend.id == friend_id, Friend.deleted == False).first()
+    if not friend:
+        raise BookImportError("所选作者不可用，请重新选择。", status_code=400)
+    return friend.id
 
 
 def _fallback_title(file_name: str) -> str:
