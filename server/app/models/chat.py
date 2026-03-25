@@ -28,6 +28,12 @@ class ChatSession(Base):
     # Relationships
     messages = relationship("Message", back_populates="session", cascade="all, delete-orphan")
     # friend = relationship("Friend") # Optional, if needed
+    
+    # 知识库/伴读隔离
+    # session_type: normal=普通单聊, book_reading=伴读聊天
+    session_type = Column(String(32), default="normal", nullable=False)
+    # 通用知识 ID，根据 session_type 指向不同的表（如 books.id）
+    knowledge_id = Column(Integer, nullable=True)
 
 
 class Message(Base):
@@ -45,5 +51,3 @@ class Message(Base):
 
     # Relationships
     session = relationship("ChatSession", back_populates="messages")
-
-

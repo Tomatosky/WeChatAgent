@@ -22,6 +22,7 @@ from app.models.friend import Friend
 from app.models.llm import LLMConfig
 from app.models.group import Group, GroupMember, GroupMessage
 from app.models.voice import VoiceTimbre
+from app.models.book import Book
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
