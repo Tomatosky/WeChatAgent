@@ -8,9 +8,18 @@ import {
   Columns2,
   ListTree,
   LoaderCircle,
-  RefreshCw,
+  MoreHorizontal,
   ScrollText,
+  Check,
 } from 'lucide-vue-next'
+
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu'
 
 import type { SelectedQuotePayload } from '@/api/chat'
 import { updateBookReadingLocation, type Book } from '@/api/book'
@@ -166,7 +175,7 @@ const headerSubtitle = computed(() => {
   return props.book.author?.trim() || '原作者待补充'
 })
 
-const progressPercent = computed(() => `${Math.round(currentProgress.value * 100)}%`)
+
 
 const getReaderContentStyles = () => `
   @namespace epub "http://www.idpf.org/2007/ops";
@@ -649,48 +658,39 @@ onBeforeUnmount(() => {
         </button>
 
         <div class="reader-title-wrap">
-          <p class="reader-eyebrow">与作者共读</p>
           <h1 class="reader-title">{{ book.title }}</h1>
           <p class="reader-subtitle">{{ headerSubtitle }}</p>
         </div>
       </div>
 
       <div class="reader-header-actions">
-        <button
-          class="header-btn secondary"
-          type="button"
-          :disabled="isLoading || !showReaderChrome || isLeaving"
-          @click="isTocOpen = true"
-        >
-          <ListTree :size="14" />
-          <span>目录</span>
-        </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button class="header-btn secondary" type="button" :disabled="isLoading || !showReaderChrome || isLeaving">
+              <MoreHorizontal :size="16" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" class="w-40">
+            <DropdownMenuItem @click="isTocOpen = true">
+              <ListTree :size="14" class="mr-2" />
+              <span>目录</span>
+            </DropdownMenuItem>
 
-        <div v-if="showModeToggle" class="mode-switch" aria-label="阅读模式切换">
-          <button
-            type="button"
-            class="mode-btn"
-            :class="{ active: flowMode === 'paginated' }"
-            @click="flowMode = 'paginated'"
-          >
-            <Columns2 :size="14" />
-            <span>分页</span>
-          </button>
-          <button
-            type="button"
-            class="mode-btn"
-            :class="{ active: flowMode === 'scrolled' }"
-            @click="flowMode = 'scrolled'"
-          >
-            <ScrollText :size="14" />
-            <span>滚动</span>
-          </button>
-        </div>
-
-        <button class="header-btn secondary" type="button" :disabled="isLoading || isLeaving" @click="handleRetry">
-          <RefreshCw :size="14" :class="{ spinning: isLoading }" />
-          <span>{{ isLoading ? '打开中...' : '重新打开' }}</span>
-        </button>
+            <template v-if="showModeToggle">
+              <DropdownMenuSeparator />
+              <DropdownMenuItem @click="flowMode = 'paginated'" :class="{ 'bg-muted': flowMode === 'paginated' }">
+                <Columns2 :size="14" class="mr-2" />
+                <span>分页阅读</span>
+                <Check v-if="flowMode === 'paginated'" :size="14" class="ml-auto" />
+              </DropdownMenuItem>
+              <DropdownMenuItem @click="flowMode = 'scrolled'" :class="{ 'bg-muted': flowMode === 'scrolled' }">
+                <ScrollText :size="14" class="mr-2" />
+                <span>滚动阅读</span>
+                <Check v-if="flowMode === 'scrolled'" :size="14" class="ml-auto" />
+              </DropdownMenuItem>
+            </template>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </header>
 
@@ -778,24 +778,7 @@ onBeforeUnmount(() => {
       </div>
     </main>
 
-    <footer class="reader-footer">
-      <div class="footer-progress">
-        <p class="progress-title">{{ currentLabel }}</p>
-        <p class="progress-detail">{{ currentDetail }}</p>
-      </div>
 
-      <div class="footer-actions">
-        <button class="footer-btn" type="button" :disabled="isLoading || !showReaderChrome || isLeaving" @click="goPrev">
-          <ChevronLeft :size="16" />
-          <span>上一页</span>
-        </button>
-        <div class="progress-pill">{{ progressPercent }}</div>
-        <button class="footer-btn" type="button" :disabled="isLoading || !showReaderChrome || isLeaving" @click="goNext">
-          <span>下一页</span>
-          <ChevronRight :size="16" />
-        </button>
-      </div>
-    </footer>
 
     <ReaderTocPanel
       :open="isTocOpen"
@@ -821,10 +804,10 @@ onBeforeUnmount(() => {
 
 .reader-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 18px 24px 14px;
+  padding: 12px 20px;
   border-bottom: 1px solid rgba(15, 23, 42, 0.08);
   background: rgba(255, 255, 255, 0.82);
   backdrop-filter: blur(18px);
@@ -838,28 +821,22 @@ onBeforeUnmount(() => {
 }
 
 .reader-title-wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
   min-width: 0;
 }
 
-.reader-eyebrow {
-  margin: 0;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: #07c160;
-}
-
 .reader-title {
-  margin: 4px 0 0;
-  font-size: 22px;
+  margin: 0;
+  font-size: 16px;
   line-height: 1.25;
-  font-weight: 700;
+  font-weight: 600;
   color: #0f172a;
 }
 
 .reader-subtitle {
-  margin: 4px 0 0;
+  margin: 0;
   font-size: 13px;
   color: #64748b;
 }
@@ -874,24 +851,24 @@ onBeforeUnmount(() => {
 
 .header-btn,
 .mode-btn,
-.overlay-btn,
-.footer-btn {
+.overlay-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   border: none;
-  border-radius: 12px;
+  border-radius: 8px;
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
 .header-btn {
-  height: 38px;
-  padding: 0 14px;
+  height: 32px;
+  padding: 0 12px;
   background: #07c160;
   color: #fff;
-  box-shadow: 0 8px 22px rgba(7, 193, 96, 0.18);
+  font-size: 13px;
+  box-shadow: 0 4px 12px rgba(7, 193, 96, 0.18);
 }
 
 .header-btn:hover:not(:disabled) {
@@ -908,6 +885,7 @@ onBeforeUnmount(() => {
 .header-btn.secondary:hover:not(:disabled) {
   border-color: rgba(100, 116, 139, 0.28);
   color: #1f2937;
+  background: #f8fafc;
 }
 
 .header-btn:disabled,
@@ -1127,71 +1105,7 @@ onBeforeUnmount(() => {
   border: 1px solid rgba(148, 163, 184, 0.24);
 }
 
-.reader-footer {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-  padding: 14px 24px 20px;
-}
 
-.footer-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.progress-pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 58px;
-  height: 32px;
-  padding: 0 12px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.84);
-  color: #0f172a;
-  font-size: 12px;
-  font-weight: 700;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-}
-
-.footer-progress {
-  flex: 1;
-  min-width: 0;
-  text-align: center;
-}
-
-.progress-title {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 700;
-  color: #0f172a;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.progress-detail {
-  margin: 2px 0 0;
-  font-size: 12px;
-  color: #64748b;
-}
-
-.footer-btn {
-  height: 36px;
-  padding: 0 14px;
-  background: rgba(255, 255, 255, 0.84);
-  color: #334155;
-  font-size: 13px;
-  font-weight: 600;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-}
-
-.footer-btn:hover:not(:disabled) {
-  color: #087443;
-  border-color: rgba(7, 193, 96, 0.25);
-}
 
 .text-green {
   color: #07c160;
@@ -1213,21 +1127,18 @@ onBeforeUnmount(() => {
 
 @media (max-width: 900px) {
   .reader-header,
-  .reader-footer,
   .reader-stage,
   .reader-banners {
     padding-left: 16px;
     padding-right: 16px;
   }
 
-  .reader-header,
-  .reader-footer {
+  .reader-header {
     flex-direction: column;
     align-items: stretch;
   }
 
-  .reader-header-actions,
-  .footer-actions {
+  .reader-header-actions {
     width: 100%;
     justify-content: space-between;
   }
@@ -1262,8 +1173,7 @@ onBeforeUnmount(() => {
   }
 
   .header-btn,
-  .overlay-btn,
-  .footer-btn {
+  .overlay-btn {
     flex: 1;
   }
 
