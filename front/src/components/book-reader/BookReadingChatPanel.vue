@@ -45,6 +45,7 @@ import {
 import { parseMessageSegments } from '@/utils/chat'
 import type { Message as ChatMessage, ToolCall, VoicePayload } from '@/types/chat'
 import { useThinkingModeStore } from '@/stores/thinkingMode'
+import { useSettingsStore } from '@/stores/settings'
 
 const props = defineProps<{
   book: Book
@@ -59,6 +60,11 @@ const emit = defineEmits<{
 }>()
 
 const thinkingModeStore = useThinkingModeStore()
+const settingsStore = useSettingsStore()
+
+const getUserAvatar = () => {
+  return getStaticUrl(settingsStore.userAvatar) || 'default_avatar.svg'
+}
 
 const messages = ref<ChatMessage[]>([])
 const input = ref('')
@@ -570,7 +576,7 @@ onBeforeUnmount(() => {
         </button>
       </header>
 
-      <Conversation ref="conversationRef" class="panel-body">
+      <div v-if="!isBoundAuthorReady || isLoadingHistory || historyError || messages.length === 0" class="panel-empty-container">
         <ConversationEmptyState
           v-if="!isBoundAuthorReady"
           class="state-card"
@@ -620,78 +626,92 @@ onBeforeUnmount(() => {
             <BookOpenText :size="18" />
           </template>
         </ConversationEmptyState>
+      </div>
 
-        <template v-else>
-          <ConversationContent class="message-list">
-            <article
+      <Conversation v-else ref="conversationRef" class="panel-body">
+        <ConversationContent class="message-list">
+            <template
               v-for="message in messages"
               :key="message.id"
-              class="message-row"
-              :class="message.role"
             >
-              <div class="message-bubble">
-                <div v-if="message.role === 'assistant'" class="assistant-meta-actions">
-                  <button
-                    v-if="hasThinking(message)"
-                    type="button"
-                    class="meta-chip"
-                    @click="openThinkingDialog(message)"
-                  >
-                    <Brain :size="13" />
-                    <span>思考</span>
-                  </button>
-                  <button
-                    v-if="getToolCalls(message).length"
-                    type="button"
-                    class="meta-chip"
-                    @click="openToolCallsDialog(message)"
-                  >
-                    <Wrench :size="13" />
-                    <span>工具</span>
-                  </button>
-                </div>
-
-                <template v-if="message.role === 'assistant'">
-                  <MessageContent>
-                    <template
-                      v-for="(segment, segmentIndex) in getAssistantMessageSegments(message)"
-                      :key="`${message.id}:${segmentIndex}`"
-                    >
-                      <MessageResponse :content="segment" class="assistant-content" />
-
-                      <button
-                        v-if="getVoiceSegmentForRender(message, segmentIndex)"
-                        type="button"
-                        class="voice-chip"
-                        @click="playVoiceSegment(message, segmentIndex)"
-                      >
-                        <Play v-if="!isVoiceSegmentPlaying(message, segmentIndex)" :size="14" />
-                        <Pause v-else :size="14" />
-                        <span>
-                          {{
-                            getVoiceSegmentForRender(message, segmentIndex)?.text || `语音片段 ${segmentIndex + 1}`
-                          }}
-                        </span>
-                        <span class="voice-duration">
-                          {{
-                            formatVoiceDuration(getVoiceSegmentForRender(message, segmentIndex)?.duration_sec || 1)
-                          }}
-                        </span>
-                      </button>
-                    </template>
-                  </MessageContent>
-                </template>
-
-                <div v-else-if="message.role === 'system'" class="system-message">
-                  {{ message.content }}
-                </div>
-
-                <p v-else class="user-message">{{ message.content }}</p>
+              <!-- 系统消息 -->
+              <div v-if="message.role === 'system'" class="msg-system">
+                <span>{{ message.content }}</span>
               </div>
-            </article>
+
+              <!-- 助手消息 -->
+              <div v-else-if="message.role === 'assistant'" class="msg-row msg-assistant">
+                <div class="msg-avatar">
+                  <img :src="boundAuthorAvatar" alt="" />
+                </div>
+                <div class="msg-body">
+                  <div v-if="hasThinking(message) || getToolCalls(message).length" class="assistant-meta-actions">
+                    <button
+                      v-if="hasThinking(message)"
+                      type="button"
+                      class="meta-chip"
+                      @click="openThinkingDialog(message)"
+                    >
+                      <Brain :size="13" />
+                      <span>思考</span>
+                    </button>
+                    <button
+                      v-if="getToolCalls(message).length"
+                      type="button"
+                      class="meta-chip"
+                      @click="openToolCallsDialog(message)"
+                    >
+                      <Wrench :size="13" />
+                      <span>工具</span>
+                    </button>
+                  </div>
+                  <template
+                    v-for="(segment, segmentIndex) in getAssistantMessageSegments(message)"
+                    :key="`${message.id}:${segmentIndex}`"
+                  >
+                    <div class="msg-bubble msg-bubble-assistant">
+                      <MessageContent>
+                        <MessageResponse :content="segment" />
+                      </MessageContent>
+                    </div>
+
+                    <button
+                      v-if="getVoiceSegmentForRender(message, segmentIndex)"
+                      type="button"
+                      class="voice-chip"
+                      @click="playVoiceSegment(message, segmentIndex)"
+                    >
+                      <Play v-if="!isVoiceSegmentPlaying(message, segmentIndex)" :size="14" />
+                      <Pause v-else :size="14" />
+                      <span>
+                        {{
+                          getVoiceSegmentForRender(message, segmentIndex)?.text || `语音片段 ${segmentIndex + 1}`
+                        }}
+                      </span>
+                      <span class="voice-duration">
+                        {{
+                          formatVoiceDuration(getVoiceSegmentForRender(message, segmentIndex)?.duration_sec || 1)
+                        }}
+                      </span>
+                    </button>
+                  </template>
+                </div>
+              </div>
+
+              <!-- 用户消息 -->
+              <div v-else class="msg-row msg-user">
+                <div class="msg-body">
+                  <div class="msg-bubble msg-bubble-user">
+                    <p>{{ message.content }}</p>
+                  </div>
+                </div>
+                <div class="msg-avatar">
+                  <img :src="getUserAvatar()" alt="" />
+                </div>
+              </div>
+            </template>
           </ConversationContent>
-          <ConversationScrollButton />
-        </template>
+        <ConversationScrollButton />
       </Conversation>
 
       <div class="panel-input">
@@ -865,17 +885,28 @@ onBeforeUnmount(() => {
 .panel-body {
   flex: 1;
   min-height: 0;
+  margin: 0 8px;
+}
+
+.panel-empty-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   margin: 0 16px;
+  min-height: 0;
 }
 
 .state-card {
+  width: 100%;
+  height: max-content !important;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 220px;
-  padding: 24px 20px;
+  min-height: 140px;
+  padding: 20px;
   text-align: center;
   border-radius: 22px;
   border: 1px dashed rgba(148, 163, 184, 0.28);
@@ -909,51 +940,111 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
+/* ===== 消息列表 ===== */
 .message-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
   padding: 14px 0 16px;
 }
 
-.message-row {
+/* 系统消息 */
+.msg-system {
+  text-align: center;
+  padding: 0 12px;
+}
+
+.msg-system span {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(226, 232, 240, 0.7);
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* 消息行 */
+.msg-row {
   display: flex;
+  gap: 10px;
+  padding: 0 8px;
 }
 
-.message-row.user {
+.msg-assistant {
+  flex-direction: row;
+  align-items: flex-start;
+}
+
+.msg-user {
+  flex-direction: row;
   justify-content: flex-end;
+  align-items: flex-start;
 }
 
-.message-row.system {
-  justify-content: center;
+/* 头像 */
+.msg-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  overflow: hidden;
+  flex-shrink: 0;
 }
 
-.message-bubble {
+.msg-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 消息内容区 */
+.msg-body {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  max-width: min(88%, 320px);
+  gap: 6px;
+  min-width: 0;
+  max-width: calc(100% - 52px);
 }
 
-.message-row.user .message-bubble {
-  align-items: flex-end;
+/* 气泡 */
+.msg-bubble {
+  padding: 10px 14px;
+  border-radius: 4px 18px 18px 18px;
+  font-size: 14px;
+  line-height: 1.7;
+  word-break: break-word;
+  white-space: pre-wrap;
 }
 
-.message-row.system .message-bubble {
-  max-width: 100%;
+.msg-bubble-assistant {
+  background: #fff;
+  color: #1f2937;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
 }
 
+.msg-bubble-user {
+  border-radius: 18px 4px 18px 18px;
+  background: #07c160;
+  color: #fff;
+}
+
+.msg-bubble-user p {
+  margin: 0;
+}
+
+/* meta 标签 */
 .assistant-meta-actions {
   display: flex;
-  gap: 8px;
+  gap: 6px;
 }
 
 .meta-chip,
 .voice-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 30px;
+  gap: 5px;
+  min-height: 28px;
   padding: 0 10px;
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 999px;
@@ -961,6 +1052,12 @@ onBeforeUnmount(() => {
   color: #475569;
   font-size: 12px;
   cursor: pointer;
+  transition: background 0.15s;
+}
+
+.meta-chip:hover,
+.voice-chip:hover {
+  background: rgba(241, 245, 249, 0.9);
 }
 
 .voice-chip {
@@ -970,34 +1067,6 @@ onBeforeUnmount(() => {
 
 .voice-duration {
   color: #94a3b8;
-}
-
-.assistant-content {
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
-}
-
-.user-message,
-.system-message {
-  margin: 0;
-  padding: 12px 14px;
-  border-radius: 18px;
-  font-size: 14px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-}
-
-.user-message {
-  background: linear-gradient(180deg, #07c160 0%, #06ad56 100%);
-  color: #fff;
-}
-
-.system-message {
-  background: rgba(226, 232, 240, 0.7);
-  color: #475569;
-  text-align: center;
 }
 
 .panel-input {
@@ -1056,9 +1125,11 @@ onBeforeUnmount(() => {
   padding: 0 0 0 12px;
   border-left: 3px solid rgba(7, 193, 96, 0.26);
   font-size: 13px;
-  line-height: 1.75;
+  line-height: 1.6;
   color: #1f2937;
-  white-space: pre-wrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .panel-textarea {

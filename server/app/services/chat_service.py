@@ -985,49 +985,42 @@ def _build_book_reading_context_message(
     selected_quote: Optional[chat_schemas.SelectedQuotePayload],
 ) -> Dict[str, str]:
     prompt = get_prompt("chat/book_reading_page_context.txt").strip()
-    supported = bool(page_context and page_context.supported)
-    excerpt = _format_prompt_value(
-        (page_context.excerpt if page_context else None)
-        or (page_context.text if page_context else None),
-        "（当前页未附加正文片段）",
-    )
-    toc_path = _format_toc_path(page_context.toc_path if page_context else [])
-    reason = _format_prompt_value(page_context.reason if page_context else None, "前端未提供 page_context")
-    status = (
-        "当前页正文片段已附加，可结合该片段回答。"
-        if supported and excerpt != "（当前页未附加正文片段）"
-        else f"当前页未附加正文上下文。原因：{reason}"
-    )
-    selected_quote_excerpt = _format_prompt_value(
-        (selected_quote.excerpt if selected_quote else None)
-        or (selected_quote.text if selected_quote else None),
-        "（用户未选中引用片段）",
-    )
-    selected_quote_status = (
-        "用户已手动选中引用内容，请优先围绕引用片段回答。"
-        if selected_quote and selected_quote_excerpt != "（用户未选中引用片段）"
-        else "用户未提供手动引用片段。"
-    )
+    
+    # 提取正文内容
+    page_content = (page_context.excerpt if page_context else None) or (page_context.text if page_context else None)
+    if not page_content:
+        page_content = "（暂无页面正文内容）"
+        
+    # 提取引用内容
+    quote_content = (selected_quote.excerpt if selected_quote else None) or (selected_quote.text if selected_quote else None)
+    
     replacements = {
-        "{{book_title}}": _format_prompt_value(book.title),
-        "{{book_author}}": _format_prompt_value(book.author, "未知"),
-        "{{context_status}}": status,
-        "{{context_reason}}": reason,
-        "{{locator}}": _format_prompt_value(page_context.locator if page_context else None),
-        "{{toc_path}}": toc_path,
-        "{{source_type}}": _format_prompt_value(page_context.source_type if page_context else None),
-        "{{truncated}}": "是" if page_context and page_context.truncated else "否",
-        "{{excerpt}}": excerpt,
-        "{{selected_quote_status}}": selected_quote_status,
-        "{{selected_quote_locator}}": _format_prompt_value(selected_quote.locator if selected_quote else None),
-        "{{selected_quote_toc_path}}": _format_toc_path(selected_quote.toc_path if selected_quote else []),
-        "{{selected_quote_source_type}}": _format_prompt_value(selected_quote.source_type if selected_quote else None),
-        "{{selected_quote_truncated}}": "是" if selected_quote and selected_quote.truncated else "否",
-        "{{selected_quote_excerpt}}": selected_quote_excerpt,
+        "{{book_title}}": book.title or "未知书名",
+        "{{book_author}}": book.author or "未知作者",
+        "{{toc_path}}": _format_toc_path(page_context.toc_path if page_context else []),
+        "{{page_content}}": page_content,
+        "{{selected_quote}}": quote_content or "",
     }
-    for key, value in replacements.items():
-        prompt = prompt.replace(key, value)
-    return {"role": "system", "content": prompt}
+    
+    # 因为 Prompt 模板里用了 jinja 风格的 {% if %}，我们需要更智能的替换或保持简单的 replace
+    # 这里保持简单的 replace，但为了支持 {% if %}，我们稍微调整下处理逻辑
+    final_content = prompt
+    final_content = final_content.replace("{{book_title}}", replacements["{{book_title}}"])
+    final_content = final_content.replace("{{book_author}}", replacements["{{book_author}}"])
+    final_content = final_content.replace("{{toc_path}}", replacements["{{toc_path}}"])
+    final_content = final_content.replace("{{page_content}}", replacements["{{page_content}}"])
+    
+    if quote_content:
+        # 简单模拟 jinja 的 if 逻辑
+        final_content = final_content.replace("{% if selected_quote %}", "")
+        final_content = final_content.replace("{% endif %}", "")
+        final_content = final_content.replace("{{selected_quote}}", quote_content)
+    else:
+        # 如果没有引用，移除整个 if 块
+        import re
+        final_content = re.sub(r"{% if selected_quote %}.*?{% endif %}", "", final_content, flags=re.DOTALL)
+
+    return {"role": "system", "content": final_content.strip()}
 
 
 def _get_session_expiry_timeout_seconds(db: Session) -> int:
