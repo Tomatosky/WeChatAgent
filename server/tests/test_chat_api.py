@@ -338,6 +338,7 @@ def test_book_reading_message_isolated_by_book_and_context_injected(client: Test
     mock_runner_result.stream_events = mock_stream_events
 
     with patch("app.services.chat_service.Runner.run_streamed", return_value=mock_runner_result) as mocked_runner, \
+         patch("app.services.chat_service.RecallService.perform_recall", new_callable=AsyncMock) as mocked_recall, \
          patch("app.services.chat_service.SessionLocal", MockSessionLocal):
         response = client.post(
             "/api/chat/book-reading/messages",
@@ -388,6 +389,7 @@ def test_book_reading_message_isolated_by_book_and_context_injected(client: Test
         assert any(msg.get("role") == "system" and "单季净利润增长135%" in msg.get("content", "") for msg in run_messages)
         assert run_messages[-1]["role"] == "user"
         assert run_messages[-1]["content"] == "你看刚刚那句话是什么意思？"
+        mocked_recall.assert_not_awaited()
 
     book_a_messages = client.get(f"/api/chat/book-reading/messages?book_id={book_a.id}&friend_id={friend_id}")
     assert book_a_messages.status_code == 200

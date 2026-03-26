@@ -1446,6 +1446,7 @@ async def _run_chat_generation_task(
     enable_thinking: bool,
     queue: asyncio.Queue,
     request_context_messages: Optional[List[Dict[str, str]]] = None,
+    allow_recall: bool = True,
 ):
     """
     Background task to handle LLM generation and persistence.
@@ -1472,7 +1473,11 @@ async def _run_chat_generation_task(
             enable_thinking = False
 
         # 2. Prepare History & Recall
-        enable_recall = SettingsService.get_setting(db, "memory", "recall_enabled", True)
+        enable_recall = (
+            SettingsService.get_setting(db, "memory", "recall_enabled", True)
+            if allow_recall
+            else False
+        )
 
         # Check for vectorization config
         if enable_recall:
@@ -1886,6 +1891,7 @@ async def send_message_stream(
     session_id: int,
     message_in: chat_schemas.MessageCreate,
     request_context_messages: Optional[List[Dict[str, str]]] = None,
+    allow_recall: bool = True,
 ):
     """
     Send a message and stream the LLM response.
@@ -1929,6 +1935,7 @@ async def send_message_stream(
         enable_thinking=effective_enable_thinking,
         queue=queue,
         request_context_messages=request_context_messages,
+        allow_recall=allow_recall,
     ))
 
     # 4. Stream events from the queue
@@ -2042,6 +2049,7 @@ async def send_book_reading_message_stream(
                 enable_thinking=message_in.enable_thinking,
             ),
             request_context_messages=[context_message],
+            allow_recall=False,
         )
         try:
             first_event = await stream.__anext__()

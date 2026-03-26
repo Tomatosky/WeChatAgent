@@ -11,7 +11,6 @@ import {
   RefreshCw,
   Wrench,
 } from 'lucide-vue-next'
-import { StreamMarkdown } from 'streamdown-vue'
 
 import { getStaticUrl } from '@/api/base'
 import {
@@ -24,6 +23,12 @@ import {
 } from '@/api/chat'
 import type { Book } from '@/api/book'
 import ToolCallsDetail from '@/components/common/ToolCallsDetail.vue'
+import {
+  Conversation,
+  ConversationContent,
+  ConversationEmptyState,
+  ConversationScrollButton,
+} from '@/components/ai-elements/conversation'
 import { MessageContent, MessageResponse } from '@/components/ai-elements/message'
 import {
   PromptInput,
@@ -61,7 +66,8 @@ const isLoadingHistory = ref(false)
 const historyError = ref<string | null>(null)
 const status = ref<'ready' | 'streaming'>('ready')
 const sessionId = ref<number | null>(null)
-const messageListRef = ref<HTMLElement | null>(null)
+const conversationRef = ref<InstanceType<typeof Conversation> | null>(null)
+const currentScrollEl = ref<HTMLElement | null>(null)
 
 const thinkingDialogOpen = ref(false)
 const toolCallsDialogOpen = ref(false)
@@ -224,7 +230,7 @@ const mapApiMessage = (message: ApiMessage): ChatMessage => ({
 
 const scrollToBottom = async () => {
   await nextTick()
-  const element = messageListRef.value
+  const element = currentScrollEl.value
   if (!element) return
   element.scrollTop = element.scrollHeight
 }
@@ -532,6 +538,20 @@ watch(
   },
 )
 
+watch(
+  () => {
+    const conv = conversationRef.value as any
+    if (!conv) return undefined
+    const scrollRefComputed = conv.scrollRef
+    const element = scrollRefComputed?.value ?? scrollRefComputed
+    return element as HTMLElement | undefined
+  },
+  scrollEl => {
+    currentScrollEl.value = scrollEl || null
+  },
+  { immediate: true, flush: 'post' },
+)
+
 onBeforeUnmount(() => {
   stopVoicePlayback()
 })
@@ -574,112 +594,129 @@ onBeforeUnmount(() => {
         <p class="context-card-detail">{{ contextSummaryDetail }}</p>
       </section>
 
-      <div ref="messageListRef" class="panel-body">
-        <div v-if="!isBoundAuthorReady" class="state-card">
-          <AlertTriangle :size="18" />
-          <h3>未绑定作者</h3>
-          <p>{{ book.author_binding_message || '请先返回图书馆为这本书绑定作者，再开启伴读。' }}</p>
-        </div>
+      <Conversation ref="conversationRef" class="panel-body">
+        <ConversationEmptyState
+          v-if="!isBoundAuthorReady"
+          class="state-card"
+          title="未绑定作者"
+          :description="book.author_binding_message || '请先返回图书馆为这本书绑定作者，再开启伴读。'"
+        >
+          <template #icon>
+            <AlertTriangle :size="18" />
+          </template>
+        </ConversationEmptyState>
 
-        <div v-else-if="isLoadingHistory" class="state-card">
-          <LoaderCircle :size="18" class="spinning text-green" />
-          <h3>正在加载伴读记录</h3>
-          <p>稍等片刻，正在恢复这本书的专属伴读历史。</p>
-        </div>
+        <ConversationEmptyState
+          v-else-if="isLoadingHistory"
+          class="state-card"
+          title="正在加载伴读记录"
+          description="稍等片刻，正在恢复这本书的专属伴读历史。"
+        >
+          <template #icon>
+            <LoaderCircle :size="18" class="spinning text-green" />
+          </template>
+        </ConversationEmptyState>
 
-        <div v-else-if="historyError" class="state-card">
-          <AlertTriangle :size="18" />
-          <h3>伴读记录加载失败</h3>
-          <p>{{ historyError }}</p>
+        <ConversationEmptyState
+          v-else-if="historyError"
+          class="state-card"
+          title="伴读记录加载失败"
+          :description="historyError"
+        >
+          <template #icon>
+            <AlertTriangle :size="18" />
+          </template>
           <button type="button" class="retry-btn" @click="loadMessages">
             <RefreshCw :size="14" />
             <span>重试</span>
           </button>
-        </div>
+        </ConversationEmptyState>
 
-        <div v-else-if="messages.length === 0" class="state-card">
-          <BookOpenText :size="18" />
-          <h3>开始和作者共读</h3>
-          <p>
-            {{
-              effectivePageContext.supported
-                ? '现在可以直接提问，系统会默认附加当前页正文片段。'
-                : '现在可以先聊天，但本次消息会以“未附加当前页正文”模式发送。'
-            }}
-          </p>
-        </div>
+        <ConversationEmptyState
+          v-else-if="messages.length === 0"
+          class="state-card"
+          title="开始和作者共读"
+          :description="effectivePageContext.supported
+            ? '现在可以直接提问，系统会默认附加当前页正文片段。'
+            : '现在可以先聊天，但本次消息会以“未附加当前页正文”模式发送。'"
+        >
+          <template #icon>
+            <BookOpenText :size="18" />
+          </template>
+        </ConversationEmptyState>
 
-        <div v-else class="message-list">
-          <article
-            v-for="message in messages"
-            :key="message.id"
-            class="message-row"
-            :class="message.role"
-          >
-            <div class="message-bubble">
-              <div v-if="message.role === 'assistant'" class="assistant-meta-actions">
-                <button
-                  v-if="hasThinking(message)"
-                  type="button"
-                  class="meta-chip"
-                  @click="openThinkingDialog(message)"
-                >
-                  <Brain :size="13" />
-                  <span>思考</span>
-                </button>
-                <button
-                  v-if="getToolCalls(message).length"
-                  type="button"
-                  class="meta-chip"
-                  @click="openToolCallsDialog(message)"
-                >
-                  <Wrench :size="13" />
-                  <span>工具</span>
-                </button>
-              </div>
-
-              <template v-if="message.role === 'assistant'">
-                <MessageContent>
-                  <template
-                    v-for="(segment, segmentIndex) in getAssistantMessageSegments(message)"
-                    :key="`${message.id}:${segmentIndex}`"
+        <template v-else>
+          <ConversationContent class="message-list">
+            <article
+              v-for="message in messages"
+              :key="message.id"
+              class="message-row"
+              :class="message.role"
+            >
+              <div class="message-bubble">
+                <div v-if="message.role === 'assistant'" class="assistant-meta-actions">
+                  <button
+                    v-if="hasThinking(message)"
+                    type="button"
+                    class="meta-chip"
+                    @click="openThinkingDialog(message)"
                   >
-                    <MessageResponse class="assistant-content">
-                      <StreamMarkdown :content="segment" />
-                    </MessageResponse>
+                    <Brain :size="13" />
+                    <span>思考</span>
+                  </button>
+                  <button
+                    v-if="getToolCalls(message).length"
+                    type="button"
+                    class="meta-chip"
+                    @click="openToolCallsDialog(message)"
+                  >
+                    <Wrench :size="13" />
+                    <span>工具</span>
+                  </button>
+                </div>
 
-                    <button
-                      v-if="getVoiceSegmentForRender(message, segmentIndex)"
-                      type="button"
-                      class="voice-chip"
-                      @click="playVoiceSegment(message, segmentIndex)"
+                <template v-if="message.role === 'assistant'">
+                  <MessageContent>
+                    <template
+                      v-for="(segment, segmentIndex) in getAssistantMessageSegments(message)"
+                      :key="`${message.id}:${segmentIndex}`"
                     >
-                      <Play v-if="!isVoiceSegmentPlaying(message, segmentIndex)" :size="14" />
-                      <Pause v-else :size="14" />
-                      <span>
-                        {{
-                          getVoiceSegmentForRender(message, segmentIndex)?.text || `语音片段 ${segmentIndex + 1}`
-                        }}
-                      </span>
-                      <span class="voice-duration">
-                        {{
-                          formatVoiceDuration(getVoiceSegmentForRender(message, segmentIndex)?.duration_sec || 1)
-                        }}
-                      </span>
-                    </button>
-                  </template>
-                </MessageContent>
-              </template>
+                      <MessageResponse :content="segment" class="assistant-content" />
 
-              <div v-else-if="message.role === 'system'" class="system-message">
-                {{ message.content }}
+                      <button
+                        v-if="getVoiceSegmentForRender(message, segmentIndex)"
+                        type="button"
+                        class="voice-chip"
+                        @click="playVoiceSegment(message, segmentIndex)"
+                      >
+                        <Play v-if="!isVoiceSegmentPlaying(message, segmentIndex)" :size="14" />
+                        <Pause v-else :size="14" />
+                        <span>
+                          {{
+                            getVoiceSegmentForRender(message, segmentIndex)?.text || `语音片段 ${segmentIndex + 1}`
+                          }}
+                        </span>
+                        <span class="voice-duration">
+                          {{
+                            formatVoiceDuration(getVoiceSegmentForRender(message, segmentIndex)?.duration_sec || 1)
+                          }}
+                        </span>
+                      </button>
+                    </template>
+                  </MessageContent>
+                </template>
+
+                <div v-else-if="message.role === 'system'" class="system-message">
+                  {{ message.content }}
+                </div>
+
+                <p v-else class="user-message">{{ message.content }}</p>
               </div>
-
-              <p v-else class="user-message">{{ message.content }}</p>
-            </div>
-          </article>
-        </div>
-      </div>
+            </article>
+          </ConversationContent>
+          <ConversationScrollButton />
+        </template>
+      </Conversation>
 
       <div class="panel-input">
         <section v-if="hasSelectedQuote" class="quote-card">
@@ -881,8 +918,7 @@ onBeforeUnmount(() => {
 .panel-body {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
-  padding: 14px 16px;
+  margin: 0 16px;
 }
 
 .state-card {
@@ -930,6 +966,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  padding: 14px 0 16px;
 }
 
 .message-row {
