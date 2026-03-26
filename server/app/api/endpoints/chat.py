@@ -203,6 +203,55 @@ async def send_message_to_friend(
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
+@router.get("/book-reading/messages", response_model=List[chat_schemas.MessageRead])
+def read_book_reading_messages(
+    *,
+    db: Session = Depends(deps.get_db),
+    book_id: int,
+    friend_id: int,
+    skip: int = 0,
+    limit: int = 200,
+):
+    try:
+        chat_service.validate_book_reading_target(db, book_id=book_id, friend_id=friend_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return chat_service.get_book_reading_messages(
+        db,
+        book_id=book_id,
+        friend_id=friend_id,
+        skip=skip,
+        limit=limit,
+    )
+
+@router.post("/book-reading/messages")
+async def send_book_reading_message(
+    *,
+    db: Session = Depends(deps.get_db),
+    message_in: chat_schemas.BookReadingMessageCreate,
+):
+    try:
+        chat_service.validate_book_reading_target(
+            db,
+            book_id=message_in.book_id,
+            friend_id=message_in.friend_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    async def event_generator():
+        async for event_data in chat_service.send_book_reading_message_stream(
+            db,
+            message_in=message_in,
+        ):
+            event_type = event_data.get("event", "message")
+            data_payload = event_data.get("data", {})
+            json_data = json.dumps(data_payload, ensure_ascii=False)
+            yield f"event: {event_type}\ndata: {json_data}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 @router.post("/messages/{message_id}/recall")
 def recall_message(
     *,

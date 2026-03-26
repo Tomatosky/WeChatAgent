@@ -6,6 +6,7 @@ import time
 import logging
 import asyncio
 from app.models.chat import ChatSession, Message
+from app.models.book import Book as BookModel
 from app.models.friend import Friend
 from app.schemas import chat as chat_schemas
 from datetime import datetime, timedelta, timezone
@@ -96,11 +97,13 @@ from agents.stream_events import RunItemStreamEvent
 
 # Global queue for memory generation tasks (processed by background worker)
 _memory_generation_queue: List[int] = []
-_friend_message_locks: Dict[int, asyncio.Lock] = {}
+_friend_message_locks: Dict[str, asyncio.Lock] = {}
 _friend_message_locks_guard = asyncio.Lock()
 
 SMART_CONTEXT_RELEVANCE_THRESHOLD = 6.0
 HARD_ARCHIVE_TIMEOUT_SECONDS = 24 * 60 * 60
+SESSION_TYPE_NORMAL = "normal"
+SESSION_TYPE_BOOK_READING = "book_reading"
 
 def _schedule_memory_generation(db: Session, session_id: int):
     """
@@ -171,7 +174,8 @@ def create_session(db: Session, session_in: chat_schemas.ChatSessionCreate) -> C
         .filter(
             ChatSession.friend_id == session_in.friend_id,
             ChatSession.deleted == False,
-            ChatSession.memory_generated == 0
+            ChatSession.memory_generated == 0,
+            ChatSession.session_type == SESSION_TYPE_NORMAL,
         )
         .all()
     )
@@ -196,7 +200,8 @@ def create_session(db: Session, session_in: chat_schemas.ChatSessionCreate) -> C
     # 创建新会话
     db_session = ChatSession(
         friend_id=session_in.friend_id,
-        title=session_in.title or "新对话"
+        title=session_in.title or "新对话",
+        session_type=SESSION_TYPE_NORMAL,
     )
     db.add(db_session)
     db.commit()
@@ -244,7 +249,8 @@ def clear_friend_chat_history(db: Session, friend_id: int):
     # 1. 找到该好友所有未归档且未删除的会话
     sessions = db.query(ChatSession).filter(
         ChatSession.friend_id == friend_id,
-        ChatSession.deleted == False
+        ChatSession.deleted == False,
+        ChatSession.session_type == SESSION_TYPE_NORMAL,
     ).all()
     
     for session in sessions:
@@ -375,7 +381,11 @@ def get_messages_by_friend(db: Session, friend_id: int, skip: int = 0, limit: in
     # Get all non-deleted sessions for this friend
     sessions = (
         db.query(ChatSession)
-        .filter(ChatSession.friend_id == friend_id, ChatSession.deleted == False)
+        .filter(
+            ChatSession.friend_id == friend_id,
+            ChatSession.deleted == False,
+            ChatSession.session_type == SESSION_TYPE_NORMAL,
+        )
         .all()
     )
     session_ids = [s.id for s in sessions]
@@ -401,7 +411,11 @@ def get_sessions_by_friend(db: Session, friend_id: int) -> List[ChatSession]:
     """
     return (
         db.query(ChatSession)
-        .filter(ChatSession.friend_id == friend_id, ChatSession.deleted == False)
+        .filter(
+            ChatSession.friend_id == friend_id,
+            ChatSession.deleted == False,
+            ChatSession.session_type == SESSION_TYPE_NORMAL,
+        )
         .order_by(ChatSession.update_time.desc())
         .all()
     )
@@ -415,7 +429,11 @@ def get_sessions_with_stats_by_friend(db: Session, friend_id: int) -> List[dict]
     # 按照最近更新时间倒序获取会话
     sessions = (
         db.query(ChatSession)
-        .filter(ChatSession.friend_id == friend_id, ChatSession.deleted == False)
+        .filter(
+            ChatSession.friend_id == friend_id,
+            ChatSession.deleted == False,
+            ChatSession.session_type == SESSION_TYPE_NORMAL,
+        )
         .order_by(ChatSession.update_time.desc())
         .all()
     )
@@ -501,6 +519,92 @@ def get_sessions_with_stats_by_friend(db: Session, friend_id: int) -> List[dict]
     return result
 
 
+def get_book_reading_messages(
+    db: Session,
+    book_id: int,
+    friend_id: int,
+    skip: int = 0,
+    limit: int = 200,
+) -> List[Message]:
+    sessions = (
+        db.query(ChatSession)
+        .filter(
+            ChatSession.friend_id == friend_id,
+            ChatSession.deleted == False,
+            ChatSession.session_type == SESSION_TYPE_BOOK_READING,
+            ChatSession.knowledge_id == book_id,
+        )
+        .order_by(ChatSession.id.desc())
+        .all()
+    )
+    session_ids = [s.id for s in sessions]
+    if not session_ids:
+        return []
+
+    messages = (
+        db.query(Message)
+        .filter(Message.session_id.in_(session_ids), Message.deleted == False)
+        .order_by(Message.create_time.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    return list(reversed(messages))
+
+
+def get_book_reading_session(
+    db: Session,
+    book_id: int,
+    friend_id: int,
+) -> Optional[ChatSession]:
+    return (
+        db.query(ChatSession)
+        .filter(
+            ChatSession.friend_id == friend_id,
+            ChatSession.deleted == False,
+            ChatSession.session_type == SESSION_TYPE_BOOK_READING,
+            ChatSession.knowledge_id == book_id,
+        )
+        .order_by(ChatSession.id.desc())
+        .first()
+    )
+
+
+def _mark_book_reading_session_active(db: Session, session: ChatSession) -> ChatSession:
+    if session.memory_generated == 0 and session.memory_error is None:
+        return session
+
+    session.memory_generated = 0
+    session.memory_error = None
+    session.update_time = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+def get_or_create_book_reading_session(
+    db: Session,
+    book_id: int,
+    friend_id: int,
+    *,
+    title: Optional[str] = None,
+) -> ChatSession:
+    existing = get_book_reading_session(db, book_id=book_id, friend_id=friend_id)
+    if existing:
+        return _mark_book_reading_session_active(db, existing)
+
+    session = ChatSession(
+        friend_id=friend_id,
+        title=title or "伴读对话",
+        session_type=SESSION_TYPE_BOOK_READING,
+        knowledge_id=book_id,
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return session
+
+
 def _get_latest_active_session_for_friend(db: Session, friend_id: int) -> Optional[ChatSession]:
     return (
         db.query(ChatSession)
@@ -508,6 +612,7 @@ def _get_latest_active_session_for_friend(db: Session, friend_id: int) -> Option
             ChatSession.friend_id == friend_id,
             ChatSession.deleted == False,
             ChatSession.memory_generated == 0,
+            ChatSession.session_type == SESSION_TYPE_NORMAL,
         )
         .order_by(ChatSession.id.desc())
         .first()
@@ -520,6 +625,7 @@ def _get_latest_session_for_friend_any_state(db: Session, friend_id: int) -> Opt
         .filter(
             ChatSession.friend_id == friend_id,
             ChatSession.deleted == False,
+            ChatSession.session_type == SESSION_TYPE_NORMAL,
         )
         .order_by(ChatSession.id.desc())
         .first()
@@ -533,6 +639,7 @@ def _get_latest_archived_session_for_friend(db: Session, friend_id: int) -> Opti
             ChatSession.friend_id == friend_id,
             ChatSession.deleted == False,
             ChatSession.memory_generated != 0,
+            ChatSession.session_type == SESSION_TYPE_NORMAL,
         )
         .order_by(ChatSession.id.desc())
         .first()
@@ -838,6 +945,91 @@ def _rollback_session_memory_if_needed(db: Session, session: ChatSession):
     )
 
 
+def validate_book_reading_target(db: Session, book_id: int, friend_id: int) -> BookModel:
+    book = (
+        db.query(BookModel)
+        .filter(BookModel.id == book_id, BookModel.deleted == False)
+        .first()
+    )
+    if not book:
+        raise ValueError("图书不存在或已删除。")
+    if not book.ai_friend_id:
+        raise ValueError("当前图书未绑定作者，请先绑定后再开启伴读。")
+    if book.ai_friend_id != friend_id:
+        raise ValueError("图书绑定作者与当前伴读目标不一致，请刷新后重试。")
+
+    friend = db.query(Friend).filter(Friend.id == friend_id, Friend.deleted == False).first()
+    if not friend:
+        raise ValueError("当前图书绑定的作者已失效，请重新绑定。")
+    return book
+
+
+def _format_prompt_value(value: Optional[str], fallback: str = "未提供") -> str:
+    if not value:
+        return fallback
+    stripped = value.strip()
+    return stripped or fallback
+
+
+def _format_toc_path(items: Optional[List[str]]) -> str:
+    return " > ".join(
+        item.strip()
+        for item in (items or [])
+        if isinstance(item, str) and item.strip()
+    ) or "未提供"
+
+
+def _build_book_reading_context_message(
+    book: BookModel,
+    page_context: Optional[chat_schemas.PageContextPayload],
+    selected_quote: Optional[chat_schemas.SelectedQuotePayload],
+) -> Dict[str, str]:
+    prompt = get_prompt("chat/book_reading_page_context.txt").strip()
+    supported = bool(page_context and page_context.supported)
+    excerpt = _format_prompt_value(
+        (page_context.excerpt if page_context else None)
+        or (page_context.text if page_context else None),
+        "（当前页未附加正文片段）",
+    )
+    toc_path = _format_toc_path(page_context.toc_path if page_context else [])
+    reason = _format_prompt_value(page_context.reason if page_context else None, "前端未提供 page_context")
+    status = (
+        "当前页正文片段已附加，可结合该片段回答。"
+        if supported and excerpt != "（当前页未附加正文片段）"
+        else f"当前页未附加正文上下文。原因：{reason}"
+    )
+    selected_quote_excerpt = _format_prompt_value(
+        (selected_quote.excerpt if selected_quote else None)
+        or (selected_quote.text if selected_quote else None),
+        "（用户未选中引用片段）",
+    )
+    selected_quote_status = (
+        "用户已手动选中引用内容，请优先围绕引用片段回答。"
+        if selected_quote and selected_quote_excerpt != "（用户未选中引用片段）"
+        else "用户未提供手动引用片段。"
+    )
+    replacements = {
+        "{{book_title}}": _format_prompt_value(book.title),
+        "{{book_author}}": _format_prompt_value(book.author, "未知"),
+        "{{context_status}}": status,
+        "{{context_reason}}": reason,
+        "{{locator}}": _format_prompt_value(page_context.locator if page_context else None),
+        "{{toc_path}}": toc_path,
+        "{{source_type}}": _format_prompt_value(page_context.source_type if page_context else None),
+        "{{truncated}}": "是" if page_context and page_context.truncated else "否",
+        "{{excerpt}}": excerpt,
+        "{{selected_quote_status}}": selected_quote_status,
+        "{{selected_quote_locator}}": _format_prompt_value(selected_quote.locator if selected_quote else None),
+        "{{selected_quote_toc_path}}": _format_toc_path(selected_quote.toc_path if selected_quote else []),
+        "{{selected_quote_source_type}}": _format_prompt_value(selected_quote.source_type if selected_quote else None),
+        "{{selected_quote_truncated}}": "是" if selected_quote and selected_quote.truncated else "否",
+        "{{selected_quote_excerpt}}": selected_quote_excerpt,
+    }
+    for key, value in replacements.items():
+        prompt = prompt.replace(key, value)
+    return {"role": "system", "content": prompt}
+
+
 def _get_session_expiry_timeout_seconds(db: Session) -> int:
     raw_timeout = SettingsService.get_setting(db, "session", "passive_timeout", 1800)
     try:
@@ -1040,17 +1232,21 @@ async def resolve_session_for_incoming_friend_message(
     return new_session
 
 
-async def _get_friend_message_lock(friend_id: int) -> asyncio.Lock:
-    lock = _friend_message_locks.get(friend_id)
+async def _get_message_lock(lock_key: str) -> asyncio.Lock:
+    lock = _friend_message_locks.get(lock_key)
     if lock:
         return lock
 
     async with _friend_message_locks_guard:
-        lock = _friend_message_locks.get(friend_id)
+        lock = _friend_message_locks.get(lock_key)
         if lock is None:
             lock = asyncio.Lock()
-            _friend_message_locks[friend_id] = lock
+            _friend_message_locks[lock_key] = lock
         return lock
+
+
+async def _get_friend_message_lock(friend_id: int) -> asyncio.Lock:
+    return await _get_message_lock(f"friend:{friend_id}:{SESSION_TYPE_NORMAL}")
 
 def get_or_create_session_for_friend(db: Session, friend_id: int) -> ChatSession:
     """
@@ -1064,7 +1260,12 @@ def get_or_create_session_for_friend(db: Session, friend_id: int) -> ChatSession
     # 按 ID 倒序（最新创建的在前）以确保获取的是最新会话
     session = (
         db.query(ChatSession)
-        .filter(ChatSession.friend_id == friend_id, ChatSession.deleted == False, ChatSession.memory_generated == 0)
+        .filter(
+            ChatSession.friend_id == friend_id,
+            ChatSession.deleted == False,
+            ChatSession.memory_generated == 0,
+            ChatSession.session_type == SESSION_TYPE_NORMAL,
+        )
         .order_by(ChatSession.id.desc())
         .first()
     )
@@ -1113,6 +1314,17 @@ def archive_session(db: Session, session_id: int):
 
     if session.memory_generated == 1:
         logger.info(f"[Archive] Session {session_id} already archived (memory_generated=1). Skipping.")
+        return
+
+    if session.session_type == SESSION_TYPE_BOOK_READING:
+        session.memory_generated = 1
+        session.memory_error = None
+        session.update_time = datetime.now(timezone.utc)
+        db.commit()
+        logger.info(
+            "[Archive] Session %s is book_reading, skip memory generation to avoid profile pollution.",
+            session_id,
+        )
         return
 
     # 边界检查:消息数 < 2 跳过
@@ -1232,7 +1444,8 @@ async def _run_chat_generation_task(
     ai_msg_id: int,
     message_content: str,
     enable_thinking: bool,
-    queue: asyncio.Queue
+    queue: asyncio.Queue,
+    request_context_messages: Optional[List[Dict[str, str]]] = None,
 ):
     """
     Background task to handle LLM generation and persistence.
@@ -1414,6 +1627,8 @@ async def _run_chat_generation_task(
         )
         if injected_recall_messages and not inject_as_tool:
             agent_messages.extend(injected_recall_messages)
+        if request_context_messages:
+            agent_messages.extend(request_context_messages)
         agent_messages.append({"role": "user", "content": message_content})
         if injected_recall_messages and inject_as_tool:
             agent_messages.extend(injected_recall_messages)
@@ -1666,7 +1881,12 @@ async def _run_chat_generation_task(
         await queue.put(None)
         db.close()
 
-async def send_message_stream(db: Session, session_id: int, message_in: chat_schemas.MessageCreate):
+async def send_message_stream(
+    db: Session,
+    session_id: int,
+    message_in: chat_schemas.MessageCreate,
+    request_context_messages: Optional[List[Dict[str, str]]] = None,
+):
     """
     Send a message and stream the LLM response.
     The actual generation is handled in a background task to ensure persistence.
@@ -1707,7 +1927,8 @@ async def send_message_stream(db: Session, session_id: int, message_in: chat_sch
         ai_msg_id=ai_msg.id,
         message_content=message_in.content,
         enable_thinking=effective_enable_thinking,
-        queue=queue
+        queue=queue,
+        request_context_messages=request_context_messages,
     ))
 
     # 4. Stream events from the queue
@@ -1778,6 +1999,60 @@ async def send_message_to_friend_stream(
             )
             return
         logger.info("[SmartContext] First SSE event prepared for friend=%s session=%s", friend_id, session.id)
+
+    if first_event:
+        yield first_event
+
+    async for event in stream:
+        yield event
+
+
+async def send_book_reading_message_stream(
+    db: Session,
+    message_in: chat_schemas.BookReadingMessageCreate,
+):
+    book = validate_book_reading_target(
+        db,
+        book_id=message_in.book_id,
+        friend_id=message_in.friend_id,
+    )
+    lock = await _get_message_lock(
+        f"friend:{message_in.friend_id}:{SESSION_TYPE_BOOK_READING}:{message_in.book_id}"
+    )
+    stream = None
+    first_event = None
+
+    async with lock:
+        session = get_or_create_book_reading_session(
+            db,
+            book_id=book.id,
+            friend_id=message_in.friend_id,
+            title=f"伴读：《{book.title}》",
+        )
+        context_message = _build_book_reading_context_message(
+            book,
+            message_in.page_context,
+            message_in.selected_quote,
+        )
+        stream = send_message_stream(
+            db,
+            session_id=session.id,
+            message_in=chat_schemas.MessageCreate(
+                content=message_in.user_message,
+                enable_thinking=message_in.enable_thinking,
+            ),
+            request_context_messages=[context_message],
+        )
+        try:
+            first_event = await stream.__anext__()
+        except StopAsyncIteration:
+            logger.warning(
+                "[BookReading] Stream finished unexpectedly before first event. book=%s friend=%s session=%s",
+                message_in.book_id,
+                message_in.friend_id,
+                session.id,
+            )
+            return
 
     if first_event:
         yield first_event

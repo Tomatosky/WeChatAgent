@@ -12,18 +12,22 @@ import {
   ScrollText,
 } from 'lucide-vue-next'
 
+import type { SelectedQuotePayload } from '@/api/chat'
 import { updateBookReadingLocation, type Book } from '@/api/book'
 import { getStaticUrl } from '@/api/base'
+import BookReadingChatPanel from '@/components/book-reader/BookReadingChatPanel.vue'
 import ReaderTocPanel from '@/components/book-reader/ReaderTocPanel.vue'
 import { useToast } from '@/composables/useToast'
 import { loadFoliateViewModule, type FoliateViewRuntimeModule } from '@/lib/book-reader/foliate'
 import {
   cacheReadingLocation,
+  createSelectedQuoteResult,
   createReaderAdapter,
   loadCachedReadingLocation,
   parseStoredReaderLocation,
   serializeStoredReaderLocation,
   type ReaderAdapter,
+  type PageContextResult,
   type TocItem,
 } from '@/lib/book-reader/readerAdapter'
 import { makeTxtBook } from '@/lib/book-reader/txtBook'
@@ -67,6 +71,18 @@ interface FoliateViewElement extends HTMLElement {
   next: (distance?: number) => Promise<void>
   goLeft: () => Promise<void>
   goRight: () => Promise<void>
+  deselect?: () => void
+}
+
+interface FoliateLoadEventDetail {
+  doc?: Document | null
+  index?: number | null
+}
+
+interface DocumentSelectionHandlers {
+  selectionchange: () => void
+  mouseup: () => void
+  keyup: () => void
 }
 
 interface ReaderBookSource {
@@ -92,10 +108,14 @@ const flowMode = ref<'paginated' | 'scrolled'>('paginated')
 const currentProgress = ref(0)
 const currentLabel = ref('等待打开')
 const currentDetail = ref('进入阅读器后可使用上一页 / 下一页浏览')
+const currentPageContext = ref<PageContextResult | null>(null)
+const selectedQuote = ref<SelectedQuotePayload | null>(null)
 const tocItems = ref<TocItem[]>([])
 const isTocOpen = ref(false)
+const isChatCollapsed = ref(false)
 const isLeaving = ref(false)
 const lastPersistedLocation = ref<string | null>(null)
+const selectionBindings = new Map<Document, DocumentSelectionHandlers>()
 let openVersion = 0
 let persistTimer: number | null = null
 
@@ -189,12 +209,85 @@ const resetReaderState = () => {
   currentProgress.value = 0
   currentLabel.value = '正在准备正文...'
   currentDetail.value = '阅读器'
+  currentPageContext.value = null
+  selectedQuote.value = null
   tocItems.value = []
   isTocOpen.value = false
 }
 
+const clearSelectedQuote = (options: { clearViewerSelection?: boolean } = {}) => {
+  selectedQuote.value = null
+  if (options.clearViewerSelection) {
+    try {
+      viewer.value?.deselect?.()
+    } catch {
+      // ignore selection clear failures
+    }
+  }
+}
+
+const removeDocumentSelectionListeners = () => {
+  for (const [doc, handlers] of selectionBindings.entries()) {
+    doc.removeEventListener('selectionchange', handlers.selectionchange)
+    doc.removeEventListener('mouseup', handlers.mouseup)
+    doc.removeEventListener('keyup', handlers.keyup)
+  }
+  selectionBindings.clear()
+}
+
+const syncSelectedQuoteFromDocument = (doc?: Document | null) => {
+  if (!doc) {
+    return
+  }
+
+  const selection = doc.defaultView?.getSelection()
+  const rawText = selection?.toString() || ''
+  if (!rawText.trim()) {
+    return
+  }
+
+  const quote = createSelectedQuoteResult(
+    rawText,
+    readerAdapter.value?.getCurrentContext() ?? currentPageContext.value,
+  )
+  if (!quote) {
+    return
+  }
+
+  selectedQuote.value = {
+    text: quote.text,
+    excerpt: quote.excerpt,
+    locator: quote.locator,
+    tocPath: quote.tocPath,
+    truncated: quote.truncated,
+    sourceType: quote.sourceType,
+  }
+}
+
+const bindDocumentSelectionListeners = (doc?: Document | null) => {
+  if (!doc || selectionBindings.has(doc)) {
+    return
+  }
+
+  const sync = () => {
+    syncSelectedQuoteFromDocument(doc)
+  }
+  const handlers: DocumentSelectionHandlers = {
+    selectionchange: sync,
+    mouseup: sync,
+    keyup: sync,
+  }
+
+  doc.addEventListener('selectionchange', handlers.selectionchange)
+  doc.addEventListener('mouseup', handlers.mouseup)
+  doc.addEventListener('keyup', handlers.keyup)
+  selectionBindings.set(doc, handlers)
+}
+
 const cleanupReader = () => {
   clearPersistTimer()
+  removeDocumentSelectionListeners()
+  clearSelectedQuote()
 
   if (viewer.value) {
     viewer.value.removeEventListener('load', handleFoliateLoad as EventListener)
@@ -242,8 +335,9 @@ const applyRendererPreferences = () => {
   renderer.setAttribute('animated', '')
 }
 
-const handleFoliateLoad = () => {
+const handleFoliateLoad = (event: Event) => {
   applyRendererPreferences()
+  bindDocumentSelectionListeners((event as CustomEvent<FoliateLoadEventDetail>).detail?.doc)
 }
 
 const getInitialStoredLocation = () =>
@@ -307,15 +401,19 @@ const triggerExitPersistence = () => {
   void persistReadingLocation({ keepalive: true })
 }
 
-const handleRelocate = (_event: Event) => {
+const syncReaderRuntimeState = () => {
   const snapshot = readerAdapter.value?.getCurrentLocation()
-  if (!snapshot) {
-    return
+  if (snapshot) {
+    currentProgress.value = snapshot.progress
+    currentLabel.value = snapshot.title
+    currentDetail.value = snapshot.detail
   }
+  currentPageContext.value = readerAdapter.value?.getCurrentContext() ?? null
+}
 
-  currentProgress.value = snapshot.progress
-  currentLabel.value = snapshot.title
-  currentDetail.value = snapshot.detail
+const handleRelocate = (_event: Event) => {
+  clearSelectedQuote({ clearViewerSelection: true })
+  syncReaderRuntimeState()
   scheduleReadingLocationPersist()
 }
 
@@ -401,6 +499,7 @@ const openReader = async () => {
         showTextStart: true,
       })
     }
+    syncReaderRuntimeState()
   } catch (error) {
     cleanupReader()
 
@@ -469,6 +568,7 @@ const handleKeydown = (event: KeyboardEvent) => {
   if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return
 
   const target = event.target as HTMLElement | null
+  if (target?.closest('[data-reader-chat-panel]')) return
   if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
 
   if (event.key === 'ArrowLeft' || event.key === 'PageUp') {
@@ -610,60 +710,72 @@ onBeforeUnmount(() => {
     </div>
 
     <main class="reader-stage">
-      <section class="reader-paper">
-        <div
-          ref="viewerHost"
-          class="viewer-host"
-          :class="{ muted: isLoading || Boolean(readerState) || Boolean(loadError) }"
+      <div class="reader-stage-layout" :class="{ 'chat-collapsed': isChatCollapsed }">
+        <section class="reader-paper">
+          <div
+            ref="viewerHost"
+            class="viewer-host"
+            :class="{ muted: isLoading || Boolean(readerState) || Boolean(loadError) }"
+          />
+
+          <button
+            v-if="showReaderChrome"
+            type="button"
+            class="nav-hotspot nav-prev"
+            :disabled="isLoading || isLeaving"
+            aria-label="上一页"
+            @click="goPrev"
+          >
+            <ChevronLeft :size="18" />
+          </button>
+
+          <button
+            v-if="showReaderChrome"
+            type="button"
+            class="nav-hotspot nav-next"
+            :disabled="isLoading || isLeaving"
+            aria-label="下一页"
+            @click="goNext"
+          >
+            <ChevronRight :size="18" />
+          </button>
+
+          <div v-if="isLoading" class="reader-overlay">
+            <LoaderCircle :size="28" class="spinning text-green" />
+            <h2>正在排版正文</h2>
+            <p>阅读器正在加载《{{ book.title }}》，稍等片刻即可开始阅读。</p>
+          </div>
+
+          <div v-else-if="readerState" class="reader-overlay">
+            <AlertTriangle :size="28" class="text-amber" />
+            <h2>{{ readerState.title }}</h2>
+            <p>{{ readerState.detail }}</p>
+            <div class="overlay-actions">
+              <button class="overlay-btn secondary" type="button" @click="handleBack">返回图书馆</button>
+            </div>
+          </div>
+
+          <div v-else-if="loadError" class="reader-overlay">
+            <AlertTriangle :size="28" class="text-amber" />
+            <h2>阅读器打开失败</h2>
+            <p>{{ loadError }}</p>
+            <div class="overlay-actions">
+              <button class="overlay-btn secondary" type="button" @click="handleBack">返回图书馆</button>
+              <button class="overlay-btn primary" type="button" @click="handleRetry">重试打开</button>
+            </div>
+          </div>
+        </section>
+
+        <BookReadingChatPanel
+          class="reader-chat-aside"
+          :book="book"
+          :collapsed="isChatCollapsed"
+          :page-context="currentPageContext"
+          :selected-quote="selectedQuote"
+          @toggle-collapse="isChatCollapsed = !isChatCollapsed"
+          @clear-selected-quote="clearSelectedQuote({ clearViewerSelection: true })"
         />
-
-        <button
-          v-if="showReaderChrome"
-          type="button"
-          class="nav-hotspot nav-prev"
-          :disabled="isLoading || isLeaving"
-          aria-label="上一页"
-          @click="goPrev"
-        >
-          <ChevronLeft :size="18" />
-        </button>
-
-        <button
-          v-if="showReaderChrome"
-          type="button"
-          class="nav-hotspot nav-next"
-          :disabled="isLoading || isLeaving"
-          aria-label="下一页"
-          @click="goNext"
-        >
-          <ChevronRight :size="18" />
-        </button>
-
-        <div v-if="isLoading" class="reader-overlay">
-          <LoaderCircle :size="28" class="spinning text-green" />
-          <h2>正在排版正文</h2>
-          <p>阅读器正在加载《{{ book.title }}》，稍等片刻即可开始阅读。</p>
-        </div>
-
-        <div v-else-if="readerState" class="reader-overlay">
-          <AlertTriangle :size="28" class="text-amber" />
-          <h2>{{ readerState.title }}</h2>
-          <p>{{ readerState.detail }}</p>
-          <div class="overlay-actions">
-            <button class="overlay-btn secondary" type="button" @click="handleBack">返回图书馆</button>
-          </div>
-        </div>
-
-        <div v-else-if="loadError" class="reader-overlay">
-          <AlertTriangle :size="28" class="text-amber" />
-          <h2>阅读器打开失败</h2>
-          <p>{{ loadError }}</p>
-          <div class="overlay-actions">
-            <button class="overlay-btn secondary" type="button" @click="handleBack">返回图书馆</button>
-            <button class="overlay-btn primary" type="button" @click="handleRetry">重试打开</button>
-          </div>
-        </div>
-      </section>
+      </div>
     </main>
 
     <footer class="reader-footer">
@@ -876,6 +988,18 @@ onBeforeUnmount(() => {
   padding: 16px 24px;
 }
 
+.reader-stage-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 30%);
+  gap: 16px;
+  height: 100%;
+  min-height: 0;
+}
+
+.reader-stage-layout.chat-collapsed {
+  grid-template-columns: minmax(0, 1fr) 68px;
+}
+
 .reader-paper {
   position: relative;
   height: 100%;
@@ -888,6 +1012,10 @@ onBeforeUnmount(() => {
   box-shadow:
     0 24px 60px rgba(15, 23, 42, 0.08),
     inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.reader-chat-aside {
+  min-height: 0;
 }
 
 .viewer-host {
@@ -1119,6 +1247,12 @@ onBeforeUnmount(() => {
   .nav-hotspot {
     width: 40px;
     height: 72px;
+  }
+
+  .reader-stage-layout,
+  .reader-stage-layout.chat-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
   }
 }
 

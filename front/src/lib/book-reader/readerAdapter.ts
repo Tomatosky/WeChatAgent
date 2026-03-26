@@ -12,6 +12,7 @@ interface ReaderProgressDetail {
   cfi?: string
   tocItem?: {
     label?: string | null
+    href?: string | null
   } | null
   pageItem?: {
     label?: string | null
@@ -22,6 +23,7 @@ interface ReaderProgressDetail {
   section?: {
     current?: number | null
   } | null
+  range?: Range | null
 }
 
 interface ReaderHistory {
@@ -30,6 +32,10 @@ interface ReaderHistory {
 
 interface ReaderRenderer {
   goTo?: (target: unknown) => Promise<unknown>
+  getContents?: () => Array<{
+    index?: number | null
+    doc?: Document | null
+  }>
 }
 
 interface ReaderBook {
@@ -62,6 +68,26 @@ export interface ReaderLocationSnapshot {
   detail: string
 }
 
+export interface PageContextResult {
+  supported: boolean
+  reason: string
+  text: string
+  excerpt: string
+  locator: string
+  tocPath: string[]
+  truncated: boolean
+  sourceType: string
+}
+
+export interface SelectedQuoteResult {
+  text: string
+  excerpt: string
+  locator: string
+  tocPath: string[]
+  truncated: boolean
+  sourceType: string
+}
+
 export interface ReaderViewAdapterTarget {
   book?: ReaderBook | null
   renderer?: ReaderRenderer | null
@@ -74,8 +100,12 @@ export interface ReaderAdapter {
   getToc: () => TocItem[]
   goToTocItem: (target: TocItem | string) => Promise<void>
   getCurrentLocation: () => ReaderLocationSnapshot | null
+  getCurrentContext: () => PageContextResult
   restoreLocation: (location: StoredReaderLocation) => Promise<boolean>
 }
+
+const PAGE_CONTEXT_CHAR_LIMIT = 1400
+const SELECTED_QUOTE_CHAR_LIMIT = 480
 
 const clampFraction = (value: number | null | undefined) => {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -198,6 +228,212 @@ const buildStoredLocation = (formatType: string, detail: ReaderProgressDetail): 
   }
 
   return null
+}
+
+const normalizeExcerptText = (value: string) =>
+  value
+    .replace(/\u00A0/g, ' ')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim()
+
+const truncateContextText = (value: string, limit: number) => {
+  if (value.length <= limit) {
+    return {
+      text: value,
+      truncated: false,
+    }
+  }
+
+  return {
+    text: `${value.slice(0, Math.max(0, limit - 1)).trimEnd()}…`,
+    truncated: true,
+  }
+}
+
+export const createSelectedQuoteResult = (
+  selectedText: string,
+  pageContext?: PageContextResult | null,
+): SelectedQuoteResult | null => {
+  const normalized = normalizeExcerptText(selectedText)
+  if (!normalized) {
+    return null
+  }
+
+  const excerpt = truncateContextText(normalized, SELECTED_QUOTE_CHAR_LIMIT)
+  return {
+    text: excerpt.text,
+    excerpt: excerpt.text,
+    locator: pageContext?.locator || '当前位置',
+    tocPath: Array.isArray(pageContext?.tocPath) ? pageContext.tocPath : [],
+    truncated: excerpt.truncated,
+    sourceType: pageContext?.sourceType || 'unknown',
+  }
+}
+
+const extractTextFromRange = (range?: Range | null) => {
+  if (!range) {
+    return ''
+  }
+
+  try {
+    const fragment = range.cloneContents()
+    return normalizeExcerptText(fragment.textContent || '')
+  } catch {
+    return ''
+  }
+}
+
+const extractTextFromDocument = (doc?: Document | null, selector?: string) => {
+  if (!doc) {
+    return ''
+  }
+
+  const target = selector ? doc.querySelector(selector) : doc.body
+  const rawText = target instanceof HTMLElement ? (target.innerText || target.textContent || '') : (target?.textContent || '')
+  return normalizeExcerptText(rawText)
+}
+
+const getRendererContents = (renderer?: ReaderRenderer | null) => {
+  if (!renderer?.getContents) {
+    return []
+  }
+
+  try {
+    const contents = renderer.getContents()
+    return Array.isArray(contents) ? contents : []
+  } catch {
+    return []
+  }
+}
+
+const getCurrentContentDocument = (
+  viewer: ReaderViewAdapterTarget,
+  detail: ReaderProgressDetail,
+) => {
+  const contents = getRendererContents(viewer.renderer)
+  const currentSectionIndex = toNonNegativeInteger(detail.section?.current)
+  if (typeof currentSectionIndex === 'number') {
+    const matched = contents.find(item => toNonNegativeInteger(item.index) === currentSectionIndex)
+    if (matched?.doc) {
+      return matched.doc
+    }
+  }
+  return contents.find(item => item.doc)?.doc ?? null
+}
+
+const findTocPath = (
+  items: RawTocItem[] | null | undefined,
+  targetLabel?: string | null,
+  targetHref?: string | null,
+  trail: string[] = [],
+): string[] | null => {
+  for (const item of items ?? []) {
+    const currentLabel = item.label?.trim() || ''
+    const nextTrail = currentLabel ? [...trail, currentLabel] : trail
+    const sameHref =
+      typeof targetHref === 'string' &&
+      targetHref.trim() &&
+      typeof item.href === 'string' &&
+      item.href.trim() === targetHref.trim()
+    const sameLabel =
+      !targetHref &&
+      typeof targetLabel === 'string' &&
+      targetLabel.trim() &&
+      currentLabel === targetLabel.trim()
+
+    if (sameHref || sameLabel) {
+      return nextTrail
+    }
+
+    const childMatch = findTocPath(item.subitems, targetLabel, targetHref, nextTrail)
+    if (childMatch?.length) {
+      return childMatch
+    }
+  }
+
+  return null
+}
+
+const buildPageContext = (
+  viewer: ReaderViewAdapterTarget,
+  formatType: string,
+): PageContextResult => {
+  const detail = viewer.lastLocation
+  const sourceType =
+    formatType === 'pdf'
+      ? 'pdf-image-only'
+      : formatType === 'txt'
+        ? 'txt'
+        : formatType || 'unknown'
+
+  if (!detail) {
+    return {
+      supported: false,
+      reason: '阅读器尚未定位到当前页',
+      text: '',
+      excerpt: '',
+      locator: '定位中',
+      tocPath: [],
+      truncated: false,
+      sourceType,
+    }
+  }
+
+  const progress = clampFraction(detail.fraction) ?? 0
+  const locator = buildLocationDetail(formatType, detail, progress)
+  const tocPath =
+    findTocPath(viewer.book?.toc, detail.tocItem?.label, detail.tocItem?.href) ??
+    (detail.tocItem?.label?.trim() ? [detail.tocItem.label.trim()] : [])
+  const currentDoc = getCurrentContentDocument(viewer, detail)
+
+  let rawText = ''
+  let reason = 'ok'
+  let resolvedSourceType = sourceType
+
+  if (formatType === 'pdf') {
+    rawText =
+      extractTextFromRange(detail.range) ||
+      extractTextFromDocument(currentDoc, '.textLayer') ||
+      extractTextFromDocument(currentDoc)
+    resolvedSourceType = rawText ? 'pdf-text-layer' : 'pdf-image-only'
+    if (!rawText) {
+      reason = '当前 PDF 页面没有可提取文本层'
+    }
+  } else {
+    rawText = extractTextFromRange(detail.range) || extractTextFromDocument(currentDoc)
+    if (!rawText) {
+      reason = '当前页正文为空或暂不可提取'
+    }
+  }
+
+  if (!rawText) {
+    return {
+      supported: false,
+      reason,
+      text: '',
+      excerpt: '',
+      locator,
+      tocPath,
+      truncated: false,
+      sourceType: resolvedSourceType,
+    }
+  }
+
+  const excerpt = truncateContextText(rawText, PAGE_CONTEXT_CHAR_LIMIT)
+
+  return {
+    supported: true,
+    reason: excerpt.truncated ? '当前页正文过长，已按上限截断' : 'ok',
+    text: excerpt.text,
+    excerpt: excerpt.text,
+    locator,
+    tocPath,
+    truncated: excerpt.truncated,
+    sourceType: resolvedSourceType,
+  }
 }
 
 const coerceLocationObject = (value: unknown, formatHint?: string): StoredReaderLocation | null => {
@@ -384,6 +620,7 @@ export const createReaderAdapter = (
       detail: buildLocationDetail(formatType, detail, progress),
     }
   },
+  getCurrentContext: () => buildPageContext(viewer, formatType),
   restoreLocation: async location => {
     try {
       if (formatType === 'pdf' && typeof location.p === 'number') {

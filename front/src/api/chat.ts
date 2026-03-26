@@ -54,6 +54,47 @@ export interface SendToFriendOptions {
   forceNewSession?: boolean
 }
 
+export interface PageContextPayload {
+  supported: boolean
+  reason?: string | null
+  text?: string | null
+  excerpt?: string | null
+  locator?: string | null
+  tocPath?: string[]
+  truncated?: boolean
+  sourceType?: string | null
+}
+
+export interface SelectedQuotePayload {
+  text: string
+  excerpt?: string | null
+  locator?: string | null
+  tocPath?: string[]
+  truncated?: boolean
+  sourceType?: string | null
+}
+
+export interface BookReadingMessageCreate {
+  user_message: string
+  book_id: number
+  friend_id: number
+  page_context?: PageContextPayload | null
+  selected_quote?: SelectedQuotePayload | null
+  enable_thinking?: boolean
+}
+
+async function readChatError(response: Response, fallback: string) {
+  try {
+    const data = await response.json()
+    if (typeof data?.detail === 'string' && data.detail.trim()) {
+      return data.detail
+    }
+  } catch {
+    // ignore
+  }
+  return fallback
+}
+
 export async function getSessions(skip: number = 0, limit: number = 100): Promise<ChatSession[]> {
   const params = new URLSearchParams({
     skip: skip.toString(),
@@ -231,6 +272,25 @@ export async function getFriendSessions(friendId: number): Promise<ChatSession[]
   return response.json()
 }
 
+export async function getBookReadingMessages(
+  bookId: number,
+  friendId: number,
+  skip: number = 0,
+  limit: number = 200,
+): Promise<Message[]> {
+  const params = new URLSearchParams({
+    book_id: bookId.toString(),
+    friend_id: friendId.toString(),
+    skip: skip.toString(),
+    limit: limit.toString(),
+  })
+  const response = await fetch(withApiBase(`/api/chat/book-reading/messages?${params.toString()}`))
+  if (!response.ok) {
+    throw new Error(await readChatError(response, 'Failed to fetch book reading messages'))
+  }
+  return response.json()
+}
+
 export async function* sendMessageToFriendStream(
   friendId: number,
   message: MessageCreate,
@@ -317,6 +377,65 @@ export async function* sendMessageToFriendStream(
           console.error('Failed to parse SSE data JSON:', e)
           yield { event: eventType, data: dataString }
         }
+      }
+    }
+  }
+}
+
+export async function* sendBookReadingMessageStream(
+  message: BookReadingMessageCreate,
+): AsyncGenerator<{ event: string, data: any }> {
+  const response = await fetch(withApiBase('/api/chat/book-reading/messages'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(message),
+  })
+
+  if (!response.ok) {
+    throw new Error(await readChatError(response, 'Failed to send book reading message'))
+  }
+
+  const reader = response.body?.getReader()
+  if (!reader) return
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) {
+      break
+    }
+
+    buffer += decoder.decode(value, { stream: true })
+    const parts = buffer.split('\n\n')
+    buffer = parts.pop() || ''
+
+    for (const part of parts) {
+      const lines = part.split('\n')
+      let eventType = 'message'
+      let dataString = ''
+
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          eventType = line.slice(7).trim()
+        } else if (line.startsWith('data: ')) {
+          dataString += (dataString ? '\n' : '') + line.slice(6)
+        }
+      }
+
+      if (!dataString) continue
+
+      try {
+        yield {
+          event: eventType,
+          data: JSON.parse(dataString),
+        }
+      } catch (error) {
+        console.error('Failed to parse book reading SSE data JSON:', error)
+        yield { event: eventType, data: dataString }
       }
     }
   }
