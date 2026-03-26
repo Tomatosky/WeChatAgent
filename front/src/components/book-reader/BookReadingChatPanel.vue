@@ -100,22 +100,6 @@ const effectivePageContext = computed<PageContextPayload>(() => (
   }
 ))
 
-const contextSummaryTitle = computed(() => {
-  if (effectivePageContext.value.supported) {
-    return effectivePageContext.value.truncated ? '当前页正文已附加（已截断）' : '当前页正文已附加'
-  }
-  return '当前页未附加正文'
-})
-
-const contextSummaryDetail = computed(() => {
-  if (effectivePageContext.value.supported) {
-    const tocText = effectivePageContext.value.tocPath?.length
-      ? effectivePageContext.value.tocPath.join(' / ')
-      : '未定位到目录'
-    return `${effectivePageContext.value.locator || '当前位置'} · ${tocText}`
-  }
-  return effectivePageContext.value.reason || '当前格式暂不支持正文提取'
-})
 
 const hasSelectedQuote = computed(() => Boolean(props.selectedQuote?.text?.trim()))
 
@@ -586,14 +570,6 @@ onBeforeUnmount(() => {
         </button>
       </header>
 
-      <section class="context-card" :class="{ warn: !effectivePageContext.supported }">
-        <div class="context-card-title">
-          <BookOpenText :size="15" />
-          <span>{{ contextSummaryTitle }}</span>
-        </div>
-        <p class="context-card-detail">{{ contextSummaryDetail }}</p>
-      </section>
-
       <Conversation ref="conversationRef" class="panel-body">
         <ConversationEmptyState
           v-if="!isBoundAuthorReady"
@@ -884,35 +860,6 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.84);
   color: #475569;
   cursor: pointer;
-}
-
-.context-card {
-  margin: 14px 16px 0;
-  padding: 12px 14px;
-  border-radius: 18px;
-  background: rgba(7, 193, 96, 0.09);
-  border: 1px solid rgba(7, 193, 96, 0.15);
-  color: #0f172a;
-}
-
-.context-card.warn {
-  background: rgba(255, 247, 237, 0.92);
-  border-color: rgba(245, 158, 11, 0.22);
-}
-
-.context-card-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.context-card-detail {
-  margin: 6px 0 0;
-  font-size: 12px;
-  line-height: 1.6;
-  color: #475569;
 }
 
 .panel-body {

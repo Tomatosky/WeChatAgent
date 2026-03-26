@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import IconSidebar from './components/IconSidebar.vue'
 import Sidebar from './components/Sidebar.vue'
@@ -59,6 +59,10 @@ const persistPrimaryTab = (tab: MainTab) => {
 }
 
 const applyActiveTab = (tab: MainTab, persist = true) => {
+  if (tab === 'library') {
+    selectedBook.value = null
+  }
+  
   activeTab.value = tab
   if (tab !== 'library') {
     selectedBook.value = null
@@ -174,7 +178,7 @@ const handleSetupComplete = () => {
 
     <div class="wechat-app">
       <!-- Icon Sidebar (always visible on desktop) -->
-      <div v-if="!isReadingBook" class="icon-sidebar-container">
+      <div class="icon-sidebar-container">
         <IconSidebar :active-tab="activeTab" @update:activeTab="updateActiveTab($event as MainTab)"
           @open-settings="handleOpenSettings('llm')" @open-profile="isProfileOpen = true" />
       </div>

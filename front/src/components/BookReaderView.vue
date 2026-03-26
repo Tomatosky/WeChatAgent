@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import {
   AlertTriangle,
-  ArrowLeft,
   ChevronLeft,
   ChevronRight,
   Columns2,
@@ -652,11 +651,6 @@ onBeforeUnmount(() => {
   <div class="book-reader-page">
     <header class="reader-header">
       <div class="reader-header-main">
-        <button class="header-btn" type="button" :disabled="isLeaving" @click="handleBack">
-          <ArrowLeft :size="16" />
-          <span>返回图书馆</span>
-        </button>
-
         <div class="reader-title-wrap">
           <h1 class="reader-title">{{ book.title }}</h1>
           <p class="reader-subtitle">{{ headerSubtitle }}</p>
